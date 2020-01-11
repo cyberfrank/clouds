@@ -42,7 +42,7 @@
     "inputs": [
         {
             "id": "config",
-            "description": "Select build configuration:",
+            "description": "Select the build configuration",
             "type": "pickString",
             "default": "Debug",
             "options": ["Debug", "Release"],
