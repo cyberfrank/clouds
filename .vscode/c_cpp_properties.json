@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Win64",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${TM_PRE_ALPHA_DIR}/headers"
+            ],
+            "defines": [
+                "TM_OS_WINDOWS",
+                "_CRT_SECURE_NO_WARNINGS"
+            ],
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "intelliSenseMode": "msvc-x64"
+        }
+    ],
+    "version": 4
+}

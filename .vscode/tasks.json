@@ -1,0 +1,51 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Generate build files",
+            "group": "none",
+            "type": "shell",
+            "command": "premake5 vs2019",
+            "args": [
+                "--verbose"
+            ]
+        },
+        {
+            "dependsOn": [
+                "Generate build files"
+            ],
+            "label": "Build",
+            "type": "shell",
+            "command": "msbuild",
+            "args": [
+                "-p:Configuration=${input:config}",
+                "-p:Platform=Win64",
+                "-p:GenerateFullPaths=true",
+                "-t:build",
+                "-v:normal"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "silent",
+                "focus": true
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "Clean",
+            "type": "shell",
+            "command": "rmdir build /s /q",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "config",
+            "description": "Select build configuration:",
+            "type": "pickString",
+            "default": "Debug",
+            "options": ["Debug", "Release"],
+        }
+    ]
+}
