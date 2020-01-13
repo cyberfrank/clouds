@@ -68,19 +68,6 @@ filter "configurations:Release"
     defines { "TM_CONFIGURATION_RELEASE" }
     optimize "On"
 
--- project "spin-component"
---     location "build/spin_component"
---     kind "SharedLib"
---     language "C++"
---     targetdir "bin/%{cfg.buildcfg}/plugins"
---     dependson {"foundation", "entity"}
---     defines { "TM_LINKS_SPIN_COMPONENT" }
---     files {"plugins/spin_component/**.inl", "plugins/spin_component/**.h", "plugins/spin_component/**.c"}
---     filter "platforms:Win64"
---         targetdir "$(TM_PRE_ALPHA_DIR)/bin/plugins"
---     filter { "platforms:MacOSX" }
---         targetdir "%TM_PRE_ALPHA_DIR%/bin/plugins"
-
 project "cloud-component"
     location "build/cloud_component"
     kind "SharedLib"
