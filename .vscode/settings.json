@@ -1,0 +1,16 @@
+{
+    "files.associations": {
+        "macros.h": "c",
+        "job_system.h": "c",
+        "math.inl": "c",
+        "unit_test.h": "c",
+        "carray.inl": "c",
+        "log.h": "c",
+        "stb_image.inl": "c",
+        "stb_image_loader.h": "c",
+        "allocator.h": "c",
+        "temp_allocator.h": "c",
+        "stb_image_write.inl": "c",
+        "noise.inl": "c"
+    }
+}

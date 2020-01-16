@@ -74,10 +74,20 @@ project "cloud-component"
     language "C++"
     targetdir "bin/%{cfg.buildcfg}/plugins"
     dependson {"foundation", "entity"}
-    defines { "TM_LINKS_CLOUD_COMPONENT" }
     files {"plugins/cloud_component/**.inl", "plugins/cloud_component/**.h", "plugins/cloud_component/**.c"}
     filter "platforms:Win64"
         targetdir "$(TM_PRE_ALPHA_DIR)/bin/plugins"
     filter { "platforms:MacOSX" }
         targetdir "%TM_PRE_ALPHA_DIR%/bin/plugins"
 
+project "noise-gen"
+    location "build/noise_gen"
+    kind "ConsoleApp"
+    defines { "TM_LINKS_FOUNDATION" }
+    files {"tools/noise_gen/**.h", "tools/noise_gen/**.c"}
+    links { "foundation" }
+    filter { "platforms:MacOSX" }
+        linkoptions {"-lc++"}
+    filter { "platforms:Win64" }
+        ignoredefaultlibraries {"libcmtd", "libcmt"}
+        links {"msvcrt"}
