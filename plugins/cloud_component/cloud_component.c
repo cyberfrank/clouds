@@ -32,7 +32,7 @@ typedef struct {
 
 void graph_module_inject(struct tm_component_manager_o *manager, struct tm_render_graph_module_o *module)
 {
-    
+
 }
 
 void create_truth_types(struct tm_the_truth_o *tt)
