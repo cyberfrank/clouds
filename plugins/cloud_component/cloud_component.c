@@ -21,7 +21,6 @@ struct tm_the_truth_api *tm_the_truth_api;
 struct tm_entity_api *tm_entity_api;
 struct tm_render_graph_module_api *tm_render_graph_module_api;
 struct tm_render_graph_toolbox_api *tm_render_graph_toolbox_api;
-struct tm_render_graph_setup_api *tm_render_graph_setup_api;
 struct tm_properties_view_api *tm_properties_view_api;
 struct tm_allocator_api *tm_allocator_api;
 struct tm_creation_graph_api *tm_creation_graph_api;
@@ -32,23 +31,13 @@ static tm_properties_aspect_i *properties_aspect;
 
 typedef struct tm_cloud_component_t {
 
-    // TM_CLOUD_QUALITY_*
     uint32_t quality;
-
     float coverage;
-
     struct
     {
         uint64_t asset;
         uint64_t version;
-    } shape_texture;
-
-    struct
-    {
-        uint64_t asset;
-        uint64_t version;
-    } detail_texture;
-    
+    } shape_texture, detail_texture;
 } tm_cloud_component_t;
 
 typedef struct tm_component_manager_o
@@ -57,20 +46,12 @@ typedef struct tm_component_manager_o
     tm_the_truth_o *tt;
     tm_allocator_i allocator;
 
-    tm_render_graph_module_o *cloud_module;
+    tm_render_graph_module_o *module;
 
 } tm_component_manager_o;
 
-static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *manager)
-{
-    tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
-    //
-    return mod;
-}
-
 static void graph_module_inject(struct tm_component_manager_o *manager, struct tm_render_graph_module_o *module)
 {
-    //
 }
 
 static void update(struct tm_component_manager_o *manager, struct tm_render_graph_o *graph, struct tm_shader_system_context_o *shader_context,
@@ -93,7 +74,6 @@ void create_truth_types(struct tm_the_truth_o *tt)
     const uint64_t object_type = tm_the_truth_api->create_object_type(tt, TM_TT_TYPE__CLOUD_COMPONENT, properties, TM_ARRAY_COUNT(properties));
     tm_the_truth_api->set_default_object_to_create_subobjects(tt, object_type);
 
-    // set aspects
     tm_the_truth_api->set_aspect(tt, object_type, TM_CI_SHADER, shader_aspect);
     tm_the_truth_api->set_aspect(tt, object_type, TM_CI_EDITOR_UI, editor_aspect);
     tm_the_truth_api->set_aspect(tt, object_type, TM_TT_ASPECT__PROPERTIES, properties_aspect);
@@ -138,6 +118,8 @@ void create_component(struct tm_entity_context_o *ctx)
         .allocator = a,
     };
 
+    //manager->module = tm_render_graph_module_api->create(&a);
+
     tm_component_i component = {
         .name = TM_TT_TYPE__CLOUD_COMPONENT,
         .bytes = sizeof(tm_cloud_component_t),
@@ -155,7 +137,6 @@ void load_cloud_component(struct tm_api_registry_api *reg, bool load)
     tm_entity_api = reg->get(TM_ENTITY_API_NAME);
     tm_render_graph_module_api = reg->get(TM_RENDER_GRAPH_API_NAME);
     tm_render_graph_toolbox_api = reg->get(TM_RENDER_GRAPH_TOOLBOX_API_NAME);
-    // tm_render_graph_setup_api = reg->get(TM_RENDER_GRAPH_SETUP_API_NAME);
     tm_properties_view_api = reg->get(TM_PROPERTIES_VIEW_API_NAME);
     tm_allocator_api = reg->get(TM_ALLOCATOR_API_NAME);
     tm_creation_graph_api = reg->get(TM_CREATION_GRAPH_API_NAME);
