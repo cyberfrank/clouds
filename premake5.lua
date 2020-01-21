@@ -74,7 +74,7 @@ project "cloud-component"
     language "C++"
     targetdir "bin/%{cfg.buildcfg}/plugins"
     dependson {"foundation", "entity"}
-    files {"plugins/cloud_component/**.inl", "plugins/cloud_component/**.h", "plugins/cloud_component/**.c"}
+    files { "plugins/cloud_component/**.inl", "plugins/cloud_component/**.h", "plugins/cloud_component/**.c", "plugins/cloud_component/**.shader" }
     filter "platforms:Win64"
         targetdir "$(TM_PRE_ALPHA_DIR)/bin/plugins"
     filter { "platforms:MacOSX" }
