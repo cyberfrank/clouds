@@ -34,7 +34,19 @@ imports : [
     { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" }    
 ]
 
-common : [[    
+common : [[   
+    float remap(in float value, in float old_min, in float old_max, in float new_min, in float new_max) {
+        return new_min + (((value - old_min) / (old_max - old_min)) * (new_max - new_min));
+    }   
+
+    float3 get_atmosphere_color(in float3 dir) {
+        float3 up = mix(float3(0.3, 0.7, 1.0), float3(0.15, 0.65, 0.9), dir.y);
+        float3 down = vec3(0.8, 0.9, 1.0);
+        float y = dir.y;
+        y = smoothstep(0, 1, clamp(remap(y, 0, 0.1, 0, 1), 0, 1));
+        return mix(down, up, y);
+    }
+
     float3 ray_sphere_intersect(float offset, in float3 dir) {
         float radius = 10000 + offset;
         float3 camera_pos = load_camera_position();
@@ -90,9 +102,10 @@ pixel_shader : {
         Texture3D shape = get_cloud_shape();
         SamplerState sampler = get_sampler_wrap_linear();
 
-        float3 col = shape.Sample(sampler, v).rgb;
+        float3 col = v;
         col *= load_coverage();
         output.color = float4(col.x, col.y, col.z, 0.5);
+        
         return output;
     ]]
 }
@@ -101,6 +114,6 @@ compile : {
     includes : [ "common", "sampling" ]
 
     variations : [        
-        { systems : [ "frame_system", "viewer_system" ] },
+        { systems : [ "frame_system", "viewer_system", "sky_system" ] },
     ]
 }
