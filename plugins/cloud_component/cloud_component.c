@@ -31,6 +31,8 @@
 #include <the_machinery/component_interfaces/editor_ui_interface.h>
 #include <the_machinery/component_interfaces/shader_interface.h>
 
+#include <plugins/creation_graph/creation_graph_output.inl>
+
 struct tm_logger_api *tm_logger_api;
 struct tm_the_truth_api *tm_the_truth_api;
 struct tm_entity_api *tm_entity_api;
@@ -127,28 +129,85 @@ static void graph_module_inject(struct tm_component_manager_o *manager, struct t
     tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
 }
 
-static bool set_constant(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, const tm_shader_constant_buffer_instance_t *inst, const char *name, const void *data, uint32_t data_size)
+static bool set_constant(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, tm_shader_constant_buffer_instance_t *instance,
+    uint64_t name, const void *data, uint32_t data_size)
 {
     tm_shader_constant_t constant;
     uint32_t constant_offset;
-
-    if (tm_shader_api->lookup_constant(io, tm_murmur_hash_string_inline(name), &constant, &constant_offset)) {
+    if (tm_shader_api->lookup_constant(io, name, &constant, &constant_offset)) {
         tm_shader_api->update_constants(io, res_buf, &(tm_shader_constant_update_t) {
-            .instance_id = inst->instance_id,
+            .instance_id = instance->instance_id,
             .constant_offset = constant_offset,
             .num_bytes = data_size,
-            .data = data
+            .data = data,
         }, 1);
         return true;
     }
-
     return false;
 }
 
-static bool set_resource(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, tm_shader_resource_binder_instance_t *inst,
+static bool set_resource(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, tm_shader_resource_binder_instance_t *instance,
     uint64_t name, const uint32_t *resource_handle, const uint32_t *aspect_flags, uint32_t first_resource, uint32_t n_resources)
 {
+    tm_shader_resource_t resource;
+    uint32_t resource_slot;
+    if (tm_shader_api->lookup_resource(io, name, &resource, &resource_slot)) {
+        tm_shader_api->update_resources(io, res_buf, &(tm_shader_resource_update_t) {
+            .instance_id = instance->instance_id,
+            .resource_slot = resource_slot,
+            .first_resource = first_resource,
+            .num_resources = n_resources,
+            .resources = resource_handle,
+            .resources_view_aspect_flags = aspect_flags,
+        }, 1);
+        return true;
+    }
     return false;
+}
+
+static void update(struct tm_component_manager_o *manager, struct tm_render_graph_o *graph, struct tm_shader_system_context_o *shader_context,
+    struct tm_renderer_resource_command_buffer_o *res_buf, const tm_transform_t *transforms, const uint32_t *transform_indices,
+    void **component_data, uint32_t num_components, const uint8_t *frustum_visibility)
+{
+    TM_INIT_TEMP_ALLOCATOR(ta);
+
+    tm_shader_o *shader = tm_shader_repository_api->lookup_shader(manager->repo, tm_murmur_hash_string_inline("volumetric_clouds"));
+
+    if (!shader)
+        return;
+
+    tm_shader_io_o *io = tm_shader_api->shader_io(shader);
+    /* carray */ tm_shader_constant_buffer_instance_t *cbuffer = 0;
+    /* carray */ tm_shader_resource_binder_instance_t *rbinder = 0;
+    tm_carray_temp_resize(cbuffer, num_components, ta);
+    tm_carray_temp_resize(rbinder, num_components, ta);
+    tm_shader_api->create_constant_buffer_instances(io, num_components, cbuffer);
+    tm_shader_api->create_resource_binder_instances(io, num_components, rbinder);
+
+    tm_cloud_component_t **cdata = (tm_cloud_component_t **)component_data;
+
+    for (uint32_t i = 0; i < num_components; ++i)
+    {
+        tm_cloud_component_t *c = cdata[i];
+
+        set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
+
+        if (c->shape_texture.asset) {
+            uint64_t wanted_version = tm_creation_graph_api->graph_version(c->shape_texture.asset);
+            if (wanted_version != c->shape_texture.version) {
+                tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->shape_texture.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
+                c->shape_texture.version = image_output.version;
+
+                tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
+                set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("cloud_shape", 0xecbca377104137c2ULL), &image[0].handle, 0, 0, 1);
+            }
+        }
+    }
+
+    tm_shader_api->destroy_constant_buffer_instances(io, cbuffer, num_components);
+    tm_shader_api->destroy_resource_binder_instances(io, rbinder, num_components);
+
+    TM_SHUTDOWN_TEMP_ALLOCATOR(ta);
 }
 
 void create_truth_types(struct tm_the_truth_o *tt)
@@ -177,6 +236,12 @@ void load_asset(tm_component_manager_o *manager, tm_entity_t e, void *data, cons
 
     c->quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
     c->coverage = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE);
+
+    uint64_t ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SHAPE_TEXTURE);
+    if (ref && ref != c->shape_texture.asset) {
+        c->shape_texture.asset = ref;
+        c->shape_texture.version = 0;
+    }
 }
 
 void destroy_component(struct tm_component_manager_o *manager)
@@ -202,9 +267,6 @@ void create_component(struct tm_entity_context_o *ctx)
 {
     uint32_t num_backends;
     tm_renderer_backend_i *backend = (tm_renderer_backend_i *)(*tm_api_registry_api->implementations(TM_RENDER_BACKEND_INTERFACE_NAME, &num_backends));
-
-    tm_renderer_resource_command_buffer_o *res_buf;
-    backend->create_resource_command_buffers(backend->inst, &res_buf, 1);
 
     tm_allocator_i a;
     tm_entity_api->create_child_allocator(ctx, TM_TT_TYPE__CLOUD_COMPONENT, &a);
@@ -241,6 +303,7 @@ void load_cloud_component(struct tm_api_registry_api *reg, bool load)
     tm_logger_api = reg->get(TM_LOGGER_API_NAME);
     tm_the_truth_api = reg->get(TM_THE_TRUTH_API_NAME);
     tm_allocator_api = reg->get(TM_ALLOCATOR_API_NAME);
+    tm_temp_allocator_api = reg->get(TM_TEMP_ALLOCATOR_API_NAME);
     tm_entity_api = reg->get(TM_ENTITY_API_NAME);
     tm_renderer_api = reg->get(TM_RENDERER_API_NAME);
     tm_render_graph_module_api = reg->get(TM_RENDER_GRAPH_MODULE_API_NAME);
@@ -282,6 +345,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
 
 static tm_ci_shader_i *shader_aspect = &(tm_ci_shader_i) {
     .graph_module_inject = graph_module_inject,
+    .update = update
 };
 
 static tm_ci_editor_ui_i *editor_aspect = &(tm_ci_editor_ui_i) {

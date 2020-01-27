@@ -66,7 +66,7 @@ vertex_shader : {
             { -1, -3,  1, 1 },
         };
     
-        bool taa_enabled = false; //load_settings_mask() & SETTINGS_TAA_ENABLED;
+        bool taa_enabled = load_settings_mask() & SETTINGS_TAA_ENABLED;
         output.position = taa_enabled ? add_taa_offset(pos[input.vertex_id], load_frame_number(), load_render_target_resolution()) : pos[input.vertex_id];
 
         float4x4 inverse_view = load_camera_inverse_view();
@@ -86,7 +86,13 @@ pixel_shader : {
 
     code : [[
         float3 v = normalize(input.camera_ray);
-        output.color = get_cloud_shape().Sample(get_sampler_wrap_linear(), v);        
+
+        Texture3D shape = get_cloud_shape();
+        SamplerState sampler = get_sampler_wrap_linear();
+
+        float3 col = shape.Sample(sampler, v).rgb;
+        col *= load_coverage();
+        output.color = float4(col.x, col.y, col.z, 0.5);
         return output;
     ]]
 }
