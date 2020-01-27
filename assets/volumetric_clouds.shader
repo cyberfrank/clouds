@@ -115,5 +115,6 @@ compile : {
 
     variations : [        
         { systems : [ "frame_system", "viewer_system" ] },
+        { systems : [ "frame_system", "viewer_system", "sky_system" ] },
     ]
 }

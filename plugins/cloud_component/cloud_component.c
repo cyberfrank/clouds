@@ -4,7 +4,6 @@
 #include <foundation/the_truth.h>
 #include <foundation/log.h>
 #include <foundation/macros.h>
-#include <foundation/api_registry.h>
 #include <foundation/allocator.h>
 #include <foundation/temp_allocator.h>
 #include <foundation/murmurhash64a.inl>

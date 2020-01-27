@@ -3,7 +3,7 @@ imports : [
     { name: "sun_direction" type: "float3" }
     { name: "beta_r" type: "float3" }
     { name: "beta_m" type: "float3" }
-    { name: "mie_g" type: "float" }     
+    { name: "mie_g" type: "float" }
 ]
 
 common : [[
@@ -20,14 +20,15 @@ common : [[
         return (1.0 / (4.0 * PI)) * ((1.0 - g2) * inv);
     }
 
-    float3 get_atmosphere_color_physical(in vec3 dir, in vec3 sun_dir) {
-        float3 color = float3(0);
+    float3 get_atmosphere_color_physical(in float3 dir) {
+        float3 color = float3(0, 0, 0);
 
         float3 sun_pos = load_sun_position();
+        float3 sun_dir = load_sun_direction();
         float intensity = 1.0;
 
         float3 beta_r = load_beta_r();
-        float beta_m = load_beta_m();
+        float3 beta_m = load_beta_m();
 
         // optical length
         float zenith = acos(max(0.0, dir.y));
@@ -46,8 +47,8 @@ common : [[
         float y_dot = 1.0 - sun_dir.y;
         y_dot *= y_dot * y_dot * y_dot * y_dot;
         float3 betas = (beta_r_theta + beta_m_theta) / (beta_r + beta_m);
-        float3 inscattered = pow(intensity * betas * (1.0 - fex), float3(1.5));
-        inscattered *= max(vec3(1), pow(intensity * betas * fex, float3(0.5)), clamp(y_dot, 0, 1));
+        float3 inscattered = pow(intensity * betas * (1.0 - fex), float3(1.5, 1.5, 1.5));
+        inscattered *= lerp(float3(1, 1, 1), pow(intensity * betas * fex, float3(0.5, 0.5, 0.5)), clamp(y_dot, 0, 1));
 
         float3 l0 = 0.1 * fex;
 
