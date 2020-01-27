@@ -6,6 +6,10 @@
 #include <foundation/macros.h>
 #include <foundation/api_registry.h>
 #include <foundation/allocator.h>
+#include <foundation/temp_allocator.h>
+#include <foundation/murmurhash64a.inl>
+#include <foundation/buffer_format.h>
+#include <foundation/carray.inl>
 
 #include <plugins/entity/entity.h>
 #include <plugins/editor_views/properties.h>
@@ -35,12 +39,14 @@ struct tm_render_graph_module_api *tm_render_graph_module_api;
 struct tm_render_graph_toolbox_api *tm_render_graph_toolbox_api;
 struct tm_properties_view_api *tm_properties_view_api;
 struct tm_allocator_api *tm_allocator_api;
+struct tm_temp_allocator_api *tm_temp_allocator_api;
 struct tm_creation_graph_api *tm_creation_graph_api;
 struct tm_ui_api *tm_ui_api;
 struct tm_api_registry_api *tm_api_registry_api;
 struct tm_shader_api *tm_shader_api;
 struct tm_shader_system_api *tm_shader_system_api;
 struct tm_shader_repository_api *tm_shader_repository_api;
+struct tm_buffer_format_api *tm_buffer_format_api; 
 
 static tm_ci_shader_i *shader_aspect;
 static tm_ci_editor_ui_i *editor_aspect;
@@ -64,6 +70,7 @@ typedef struct tm_component_manager_o
     tm_the_truth_o *tt;
     tm_renderer_backend_i *rb;
     tm_allocator_i allocator;
+    tm_shader_repository_o *repo;
 
     tm_render_graph_module_o *module;
 
@@ -120,11 +127,28 @@ static void graph_module_inject(struct tm_component_manager_o *manager, struct t
     tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
 }
 
-static void update(struct tm_component_manager_o *manager, struct tm_render_graph_o *graph, struct tm_shader_system_context_o *shader_context,
-    struct tm_renderer_resource_command_buffer_o *res_buf, const tm_transform_t *transforms, const uint32_t *transform_indices,
-    void **component_data, uint32_t num_components,
-    const uint8_t *frustum_visibility)
+static bool set_constant(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, const tm_shader_constant_buffer_instance_t *inst, const char *name, const void *data, uint32_t data_size)
 {
+    tm_shader_constant_t constant;
+    uint32_t constant_offset;
+
+    if (tm_shader_api->lookup_constant(io, tm_murmur_hash_string_inline(name), &constant, &constant_offset)) {
+        tm_shader_api->update_constants(io, res_buf, &(tm_shader_constant_update_t) {
+            .instance_id = inst->instance_id,
+            .constant_offset = constant_offset,
+            .num_bytes = data_size,
+            .data = data
+        }, 1);
+        return true;
+    }
+
+    return false;
+}
+
+static bool set_resource(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, tm_shader_resource_binder_instance_t *inst,
+    uint64_t name, const uint32_t *resource_handle, const uint32_t *aspect_flags, uint32_t first_resource, uint32_t n_resources)
+{
+    return false;
 }
 
 void create_truth_types(struct tm_the_truth_o *tt)
@@ -178,17 +202,24 @@ void create_component(struct tm_entity_context_o *ctx)
 {
     uint32_t num_backends;
     tm_renderer_backend_i *backend = (tm_renderer_backend_i *)(*tm_api_registry_api->implementations(TM_RENDER_BACKEND_INTERFACE_NAME, &num_backends));
-    
+
+    tm_renderer_resource_command_buffer_o *res_buf;
+    backend->create_resource_command_buffers(backend->inst, &res_buf, 1);
+
     tm_allocator_i a;
     tm_entity_api->create_child_allocator(ctx, TM_TT_TYPE__CLOUD_COMPONENT, &a);
     tm_component_manager_o *manager = tm_alloc(&a, sizeof(*manager));
     tm_the_truth_o *tt = tm_entity_api->the_truth(ctx);
+
+    uint32_t num_repos;
+    tm_shader_repository_o *repo = (tm_shader_repository_o *)(*tm_api_registry_api->implementations(TM_SHADER_REPOSITORY_INSTANCE_NAME, &num_repos));
 
     *manager = (tm_component_manager_o) {
         .ctx = ctx,
         .tt = tt,
         .rb = backend,
         .allocator = a,
+        .repo = repo,
     };
 
     // create cloud module
@@ -221,6 +252,7 @@ void load_cloud_component(struct tm_api_registry_api *reg, bool load)
     tm_shader_api = reg->get(TM_SHADER_API_NAME);
     tm_shader_system_api = reg->get(TM_SHADER_SYSTEM_API_NAME);
     tm_shader_repository_api = reg->get(TM_SHADER_REPOSITORY_API_NAME);
+    tm_buffer_format_api = reg->get(TM_BUFFER_FORMAT_API_NAME);
 
     tm_add_or_remove_implementation(reg, load, TM_THE_TRUTH_CREATE_TYPES_INTERFACE_NAME, create_truth_types);
     tm_add_or_remove_implementation(reg, load, TM_ENTITY_CREATE_COMPONENT_INTERFACE_NAME, create_component);
@@ -250,7 +282,6 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
 
 static tm_ci_shader_i *shader_aspect = &(tm_ci_shader_i) {
     .graph_module_inject = graph_module_inject,
-    .update = update,
 };
 
 static tm_ci_editor_ui_i *editor_aspect = &(tm_ci_editor_ui_i) {

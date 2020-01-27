@@ -8,6 +8,13 @@ raster_states : {
     polygon_mode: "fill"
 }
 
+blend_states : {
+    logical_operation_enable: false
+    render_target_0 : {
+        blend_enable: true
+    }
+}
+
 samplers : {
     wrap_linear : {
         anisotropy_enable: true
@@ -21,8 +28,10 @@ samplers : {
 }
 
 imports : [
-    //{ name: "textures" type: "texture_3d" elements: 2 }
+    { name: "cloud_shape" type: "texture_3d" }
+    { name: "cloud_detail" type: "texture_3d" }
     { name: "coverage" type: "float" }
+    { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" }    
 ]
 
 common : [[    
@@ -47,7 +56,7 @@ vertex_shader : {
     import_system_semantics : [ "vertex_id" ]
 
     exports : [        
-        //{ name: "camera_ray" type: "float3"}
+        { name: "camera_ray" type: "float3"}
     ] 
 
     code : [[
@@ -57,9 +66,15 @@ vertex_shader : {
             { -1, -3,  1, 1 },
         };
     
-        bool taa_enabled = load_settings_mask() & SETTINGS_TAA_ENABLED;
+        bool taa_enabled = false; //load_settings_mask() & SETTINGS_TAA_ENABLED;
         output.position = taa_enabled ? add_taa_offset(pos[input.vertex_id], load_frame_number(), load_render_target_resolution()) : pos[input.vertex_id];
 
+        float4x4 inverse_view = load_camera_inverse_view();
+        
+        float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
+        cp = taa_enabled ? remove_taa_offset(cp, load_frame_number(), load_render_target_resolution()) : cp;
+        float4 p = mul(cp, load_camera_inverse_projection());
+        output.camera_ray = mul(p.xyz, (float3x3)inverse_view);  
         return output;
     ]]
 }
@@ -70,8 +85,8 @@ pixel_shader : {
     ]
 
     code : [[
-        float t = 1;
-        output.color = float4(t, t, t, 0);
+        float3 v = normalize(input.camera_ray);
+        output.color = get_cloud_shape().Sample(get_sampler_wrap_linear(), v);        
         return output;
     ]]
 }
