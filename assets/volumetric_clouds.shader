@@ -40,11 +40,11 @@ common : [[
     }   
 
     float3 get_atmosphere_color(in float3 dir) {
-        float3 up = mix(float3(0.3, 0.7, 1.0), float3(0.15, 0.65, 0.9), dir.y);
-        float3 down = vec3(0.8, 0.9, 1.0);
+        float3 up = lerp(float3(0.3, 0.7, 1.0), float3(0.15, 0.65, 0.9), dir.y);
+        float3 down = float3(0.8, 0.9, 1.0);
         float y = dir.y;
         y = smoothstep(0, 1, clamp(remap(y, 0, 0.1, 0, 1), 0, 1));
-        return mix(down, up, y);
+        return lerp(down, up, y);
     }
 
     float3 ray_sphere_intersect(float offset, in float3 dir) {
@@ -102,7 +102,7 @@ pixel_shader : {
         Texture3D shape = get_cloud_shape();
         SamplerState sampler = get_sampler_wrap_linear();
 
-        float3 col = v;
+        float3 col = get_atmosphere_color(v);
         col *= load_coverage();
         output.color = float4(col.x, col.y, col.z, 0.5);
         
@@ -114,6 +114,6 @@ compile : {
     includes : [ "common", "sampling" ]
 
     variations : [        
-        { systems : [ "frame_system", "viewer_system", "sky_system" ] },
+        { systems : [ "frame_system", "viewer_system" ] },
     ]
 }
