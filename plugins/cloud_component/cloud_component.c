@@ -4,7 +4,6 @@
 #include <foundation/the_truth.h>
 #include <foundation/log.h>
 #include <foundation/macros.h>
-#include <foundation/api_registry.h>
 #include <foundation/allocator.h>
 #include <foundation/temp_allocator.h>
 #include <foundation/murmurhash64a.inl>
@@ -12,7 +11,6 @@
 #include <foundation/carray.inl>
 
 #include <plugins/entity/entity.h>
-#include <plugins/entity/transform_component.h>
 #include <plugins/editor_views/properties.h>
 #include <plugins/creation_graph/creation_graph.h>
 #include <plugins/creation_graph/image_nodes.h>
@@ -30,8 +28,7 @@
 #include <plugins/ui/ui.h>
 
 #include <the_machinery/component_interfaces/editor_ui_interface.h>
-#include <the_machinery/component_interfaces/render_interface.h>
-#include <the_machinery/render_context.h>
+#include <the_machinery/component_interfaces/shader_interface.h>
 
 #include <plugins/creation_graph/creation_graph_output.inl>
 
@@ -52,7 +49,7 @@ struct tm_shader_system_api *tm_shader_system_api;
 struct tm_shader_repository_api *tm_shader_repository_api;
 struct tm_buffer_format_api *tm_buffer_format_api; 
 
-static tm_ci_render_i *render_aspect;
+static tm_ci_shader_i *shader_aspect;
 static tm_ci_editor_ui_i *editor_aspect;
 static tm_properties_aspect_i *properties_aspect;
 struct tm_render_graph_editor_submenu_i *tm_render_graph_editor_submenu_i;
@@ -85,7 +82,6 @@ typedef struct tm_component_manager_o
 
 } tm_component_manager_o;
 
-/*
 static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_style_t *uistyle, tm_vec2_t submenu_pos)
 {
     tm_component_manager_o *manager = (tm_component_manager_o *)inst;
@@ -131,7 +127,6 @@ static void graph_module_inject(struct tm_component_manager_o *manager, struct t
 {
     tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
 }
-*/
 
 static bool set_constant(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, tm_shader_constant_buffer_instance_t *instance,
     uint64_t name, const void *data, uint32_t data_size)
@@ -169,77 +164,51 @@ static bool set_resource(tm_shader_io_o *io, tm_renderer_resource_command_buffer
     return false;
 }
 
-static void render(struct tm_component_manager_o *manager, struct tm_render_context_args_t *args, const tm_ci_render_viewer_t *viewers,
-    uint32_t num_viewers, const tm_entity_t *entities, const tm_transform_component_t *entity_transforms, const bool *entity_selection_state, const uint32_t *entity_indices,
-    void **render_component_data, uint32_t num_renderables, const uint8_t *frustum_visibility)
+static void update(struct tm_component_manager_o *manager, struct tm_render_graph_o *graph, struct tm_shader_system_context_o *shader_context,
+    struct tm_renderer_resource_command_buffer_o *res_buf, const tm_transform_t *transforms, const uint32_t *transform_indices,
+    void **component_data, uint32_t num_components, const uint8_t *frustum_visibility)
 {
-    TM_INIT_TEMP_ALLOCATOR_WITH_ADAPTER(ta, a);
+    TM_INIT_TEMP_ALLOCATOR(ta);
 
-    tm_shader_o *shader = tm_shader_repository_api->lookup_shader(args->shader_repository, TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL));
-    
+    tm_shader_o *shader = tm_shader_repository_api->lookup_shader(manager->repo, TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL));
+
     if (!shader)
         return;
 
-    tm_render_pipeline_shader_system_t selection_system;
-    args->render_pipeline->api->global_shader_system(args->render_pipeline->inst, TM_RENDER_PIPELINE_EDITOR_SELECTION, &selection_system);
-    tm_shader_system_context_o *shader_context = tm_shader_system_api->clone_context(args->shader_context, a);
-
     tm_shader_io_o *io = tm_shader_api->shader_io(shader);
-
     /* carray */ tm_shader_constant_buffer_instance_t *cbuffer = 0;
     /* carray */ tm_shader_resource_binder_instance_t *rbinder = 0;
-    tm_carray_temp_resize(cbuffer, num_renderables, ta);
-    tm_carray_temp_resize(rbinder, num_renderables, ta);
-    tm_shader_api->create_constant_buffer_instances(io, num_renderables, cbuffer);
-    tm_shader_api->create_resource_binder_instances(io, num_renderables, rbinder);
+    tm_carray_temp_resize(cbuffer, num_components, ta);
+    tm_carray_temp_resize(rbinder, num_components, ta);
+    tm_shader_api->create_constant_buffer_instances(io, num_components, cbuffer);
+    tm_shader_api->create_resource_binder_instances(io, num_components, rbinder);
 
-    /* carray */ tm_renderer_shader_info_t *shader_infos = 0;
-    tm_carray_temp_resize(shader_infos, num_viewers * num_renderables, ta);
+    tm_cloud_component_t **cdata = (tm_cloud_component_t **)component_data;
 
-    /* carray */ tm_renderer_draw_call_info_t *draw_calls = 0;
-    tm_carray_temp_resize(draw_calls, num_viewers * num_renderables, ta);
-
-    /* carray */ uint64_t *sort_keys = 0;
-    tm_carray_temp_resize(sort_keys, num_viewers * num_renderables, ta);
-
-    tm_cloud_component_t **cdata = (tm_cloud_component_t **)render_component_data;
-
-    uint32_t num_draws = 0;
-    for (uint32_t i = 0; i < num_renderables; ++i) {
+    for (uint32_t i = 0; i < num_components; ++i)
+    {
         tm_cloud_component_t *c = cdata[i];
 
-        bool updated = false;
-        for (uint32_t v = 0; v < num_viewers; ++v) {
-            const tm_ci_render_viewer_t viewer = viewers[v];
-            tm_shader_system_api->activate_system(shader_context, viewer.viewer_system, viewer.viewer_cbuffer, 1, viewer.viewer_rbinder, viewer.viewer_rbinder ? 1 : 0);
+        set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
 
-            if (!updated) {
-                set_constant(io, args->default_resource_buffer, &cbuffer[i], TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
-                updated = true;
+        if (c->shape_texture.asset) {
+            uint64_t wanted_version = tm_creation_graph_api->graph_version(c->shape_texture.asset);
+            if (wanted_version != c->shape_texture.version) {
+                tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->shape_texture.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
+                c->shape_texture.version = image_output.version;
+
+                tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
+                
+                const char *format = tm_buffer_format_api->human_readable(image->desc.format, ta);
+                TM_LOG("resource %i: %ix%ix%i %s\n", image->handle, image->desc.width, image->desc.height, image->desc.depth, format);
+                set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("cloud_shape", 0xecbca377104137c2ULL), &image->handle, 0, 0, 1);
             }
-
-            tm_shader_api->assemble_shader_infos(shader, 0, 0, shader_context, args->default_resource_buffer, &cbuffer[i], &rbinder[i], 1, &shader_infos[num_draws]);
-
-            draw_calls[num_draws] = (tm_renderer_draw_call_info_t) {
-                .primitive_type = TM_RENDERER_PRIMITIVE_TYPE_TRIANGLE_LIST,
-                .draw_type = TM_RENDERER_DRAW_TYPE_NON_INDEXED,
-                .non_indexed = {
-                    .num_vertices = 3,
-                    .first_vertex = 0,
-                },
-                .num_instances = 1,
-            };
-            sort_keys[num_draws] = viewer.sort_key;
-            ++num_draws;
-
-            tm_shader_system_api->deactivate_system(shader_context, viewer.viewer_system);
         }
+
     }
 
-    //tm_renderer_api->tm_renderer_command_buffer_api->draw_calls(args->default_command_buffer, sort_keys, draw_calls, shader_infos, num_draws);
-
-    tm_shader_api->destroy_constant_buffer_instances(io, cbuffer, num_renderables);
-    tm_shader_api->destroy_resource_binder_instances(io, rbinder, num_renderables);
+    tm_shader_api->destroy_constant_buffer_instances(io, cbuffer, num_components);
+    tm_shader_api->destroy_resource_binder_instances(io, rbinder, num_components);
 
     TM_SHUTDOWN_TEMP_ALLOCATOR(ta);
 }
@@ -256,7 +225,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
     const uint64_t object_type = tm_the_truth_api->create_object_type(tt, TM_TT_TYPE__CLOUD_COMPONENT, properties, TM_ARRAY_COUNT(properties));
     tm_the_truth_api->set_default_object_to_create_subobjects(tt, object_type);
 
-    tm_the_truth_api->set_aspect(tt, object_type, TM_CI_RENDER, render_aspect);
+    tm_the_truth_api->set_aspect(tt, object_type, TM_CI_SHADER, shader_aspect);
     tm_the_truth_api->set_aspect(tt, object_type, TM_CI_EDITOR_UI, editor_aspect);
     tm_the_truth_api->set_aspect(tt, object_type, TM_TT_ASPECT__PROPERTIES, properties_aspect);
     tm_the_truth_api->set_property_aspect(tt, object_type, TM_TT_PROP__CLOUD_COMPONENT__SHAPE_TEXTURE, TM_TT_PROP_ASPECT__PROPERTIES__ASSET_PICKER, TM_TT_TYPE__CREATION_GRAPH);
@@ -286,7 +255,7 @@ void destroy_component(struct tm_component_manager_o *manager)
     backend->create_resource_command_buffers(backend->inst, &res_buf, 1);
 
     // destroy volumetric cloud module
-    // tm_render_graph_module_api->destroy(manager->module, res_buf);
+    tm_render_graph_module_api->destroy(manager->module, res_buf);
 
     backend->submit_resource_command_buffers(backend->inst, &res_buf, 1);
     backend->destroy_resource_command_buffers(backend->inst, &res_buf, 1);
@@ -319,7 +288,7 @@ void create_component(struct tm_entity_context_o *ctx)
     };
 
     // create cloud module
-    // manager->module = create_volumetric_cloud_module(manager);
+    manager->module = create_volumetric_cloud_module(manager);
 
     tm_component_i component = {
         .name = TM_TT_TYPE__CLOUD_COMPONENT,
@@ -377,15 +346,9 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     return item_rect.y;
 }
 
-/*
 static tm_ci_shader_i *shader_aspect = &(tm_ci_shader_i) {
     .graph_module_inject = graph_module_inject,
     .update = update
-};
-*/
-
-static tm_ci_render_i *render_aspect = &(tm_ci_render_i) {
-    .render = render,
 };
 
 static tm_ci_editor_ui_i *editor_aspect = &(tm_ci_editor_ui_i) {
