@@ -102,7 +102,8 @@ pixel_shader : {
         Texture3D shape = get_cloud_shape();
         SamplerState sampler = get_sampler_wrap_linear();
 
-        float3 col = get_atmosphere_color(v);
+        float3 col = shape.Sample(sampler, v).rgb;
+        col *= load_coverage();
         output.color = float4(col.x, col.y, col.z, 0.5);
         
         return output;
