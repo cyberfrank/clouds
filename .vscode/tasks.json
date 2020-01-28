@@ -11,8 +11,15 @@
             ]
         },
         {
+            "label": "Hash strings",
+            "group": "none",
+            "type": "shell",
+            "command": "%TM_PRE_ALPHA_DIR%/bin/hash"
+        },
+        {
             "dependsOn": [
-                "Generate build files"
+                "Hash strings",
+                "Generate build files",
             ],
             "label": "Build",
             "type": "shell",
