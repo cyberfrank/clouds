@@ -63,8 +63,6 @@ void create_truth_types(struct tm_the_truth_o *tt)
         { "mie_c", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "ray_c", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "turbidity", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
-        { "sun_azimuth", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
-        { "sun_elevation", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "sun_size", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "sun_intensity", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
     };
@@ -133,11 +131,12 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         tm_sky_component_t *c = cdata[i];
 
         // calculate sun direction
-        float theta = 2.0f * TM_PI * (c->sun_elevation - 0.5f);
-        float phi = 2.0f * TM_PI * (c->sun_azimuth - 0.5f);
-        tm_vec3_t sun_dir = TM_MAKE_VEC3(cosf(phi), sinf(phi) * sinf(theta), sinf(phi) * cosf(theta));
+        tm_transform_t transform = transforms[transform_indices[i]];
+        tm_mat44_t mat;
+        tm_mat44_from_translation_quaternion_scale(&mat, transform.pos, transform.rot, transform.scl);
+        tm_vec3_t *sun_dir = tm_mat44_z(&mat);
 
-        set_constant(io, res_buf, &cbufs[i], TM_STATIC_HASH("sun_direction", 0x93b473247f3ee6dfULL), &sun_dir, sizeof(tm_vec3_t));
+        set_constant(io, res_buf, &cbufs[i], TM_STATIC_HASH("sun_direction", 0x93b473247f3ee6dfULL), sun_dir, sizeof(tm_vec3_t));
 
         // reyleigh term
         tm_vec3_t beta_r = tm_vec3_mul(c->beta_r, c->ray_c);
@@ -169,8 +168,6 @@ void load_asset(tm_component_manager_o *manager, tm_entity_t e, void *data, cons
     c->mie_c = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__SKY_COMPONENT__MIE_C);
     c->ray_c = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__SKY_COMPONENT__RAY_C);
     c->turbidity = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__SKY_COMPONENT__TURBIDITY);
-    c->sun_azimuth = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__SKY_COMPONENT__SUN_AZIMUTH);
-    c->sun_elevation = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__SKY_COMPONENT__SUN_ELEVATION);
     c->sun_size = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__SKY_COMPONENT__SUN_SIZE);
     c->sun_intensity = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__SKY_COMPONENT__SUN_INTENSITY);
 }
@@ -230,16 +227,10 @@ void load_sky_component(struct tm_api_registry_api *reg, bool load)
 
 static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_rect, uint64_t object, uint32_t indent)
 {
-    tm_properties_float_slider_t slider01 = {
-        .min = 0.0f,
-        .max = 1.0f,
-        .step = 0.001f,
-    };
-
     tm_properties_float_slider_t slider020 = {
         .min = 0.0f,
         .max = 30.0f,
-        .step = 0.25f,
+        .step = 0.1f,
         .show_edit_box = true,
     };
     
@@ -265,8 +256,6 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     if (sun_settings)
     {
         item_rect.x += TM_PROPERTIES_METRIC_INDENT;
-        item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Sun Azimuth", 0, object, TM_TT_PROP__SKY_COMPONENT__SUN_AZIMUTH, &slider01);
-        item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Sun Elevation", 0, object, TM_TT_PROP__SKY_COMPONENT__SUN_ELEVATION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Sun Size", 0, object, TM_TT_PROP__SKY_COMPONENT__SUN_SIZE, 0);
         item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Sun Intensity", 0, object, TM_TT_PROP__SKY_COMPONENT__SUN_INTENSITY, 0);
     }

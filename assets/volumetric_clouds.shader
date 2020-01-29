@@ -30,7 +30,6 @@ samplers : {
 imports : [
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
-    { name: "coverage" type: "float" }
     { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" }    
 ]
 
@@ -86,7 +85,7 @@ vertex_shader : {
         float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
         cp = taa_enabled ? remove_taa_offset(cp, load_frame_number(), load_render_target_resolution()) : cp;
         float4 p = mul(cp, load_camera_inverse_projection());
-        output.camera_ray = mul(p.xyz, (float3x3)inverse_view);  
+        output.camera_ray = mul(p.xyz, (float3x3)inverse_view);
         return output;
     ]]
 }
@@ -102,13 +101,23 @@ pixel_shader : {
         Texture3D shape = get_cloud_shape();
         SamplerState sampler = get_sampler_wrap_linear();
 
-        //float3 col = shape.Sample(sampler, v).rgb;
-        //col *= load_coverage();
+        float s = shape.Sample(sampler, v).r;
         float3 col = get_sky_color_physical(v);
         output.color = float4(col.x, col.y, col.z, 0.5);
         
         return output;
     ]]
+}
+
+creation_graph_node : {
+    name: "volumetric_clouds"
+    display_name: "Volumetric Clouds"
+    category: "Shader/Output"
+
+    inputs : [
+        { name: "cloud_shape" display_name: "Cloud Shape" target: { name: "cloud_shape" element: 0 } optional: false }
+        { name: "cloud_detail" display_name: "Cloud Detail" target: { name: "cloud_detail" element: 0 } optional: false }
+    ]
 }
 
 compile : {

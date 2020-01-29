@@ -68,17 +68,17 @@ filter "configurations:Release"
     defines { "TM_CONFIGURATION_RELEASE" }
     optimize "On"
 
-project "cloud-component"
-    location "build/cloud_component"
-    kind "SharedLib"
-    language "C++"
-    targetdir "bin/%{cfg.buildcfg}/plugins"
-    dependson {"foundation", "entity"}
-    files { "plugins/cloud_component/**.inl", "plugins/cloud_component/**.h", "plugins/cloud_component/**.c" }
-    filter "platforms:Win64"
-        targetdir "$(TM_PRE_ALPHA_DIR)/bin/plugins"
-    filter { "platforms:MacOSX" }
-        targetdir "%TM_PRE_ALPHA_DIR%/bin/plugins"
+-- project "cloud-component"
+--     location "build/cloud_component"
+--     kind "SharedLib"
+--     language "C++"
+--     targetdir "bin/%{cfg.buildcfg}/plugins"
+--     dependson {"foundation", "entity"}
+--     files { "plugins/cloud_component/**.inl", "plugins/cloud_component/**.h", "plugins/cloud_component/**.c" }
+--     filter "platforms:Win64"
+--         targetdir "$(TM_PRE_ALPHA_DIR)/bin/plugins"
+--     filter { "platforms:MacOSX" }
+--         targetdir "%TM_PRE_ALPHA_DIR%/bin/plugins"
 
 project "sky-component"
     location "build/sky_component"

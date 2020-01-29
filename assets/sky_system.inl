@@ -2,9 +2,11 @@
 
 typedef struct tm_shader_sky_system_t
 {
-    tm_vec3_t sun_position;
     tm_vec3_t sun_direction;
+    float sun_intensity;
+    float sun_size;
     tm_vec3_t beta_r;
     tm_vec3_t beta_m;
     float mie_g;
+    float turbidity;
 } tm_shader_sky_system_t;

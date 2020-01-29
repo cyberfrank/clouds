@@ -9,6 +9,7 @@ imports : [
 ]
 
 common : [[
+    #define USE_SKY_SYSTEM
     #define PI 3.1415926
 
     float phase_function_r(in float mu) {
@@ -58,11 +59,6 @@ common : [[
         float3 inscattered = pow(sun_e * betas * (1.0 - ex), float3(1.5, 1.5, 1.5));
         inscattered *= lerp(float3(1.0, 1.0, 1.0), pow(sun_e * betas * ex, float3(0.5, 0.5, 0.5)), clamp(pow(1.0 - sun_dir.y, 5.0), 0, 1));
 
-        // night sky
-        float theta = acos(dir.y);
-        float phi = atan2(dir.z, dir.x);
-        float2 uv = float2(phi, theta) / float2(2 * PI, PI) + float2(0.5, 0.0);
-        
         float3 reflected = ex * 0.1;
 
         // sun disk
@@ -70,7 +66,7 @@ common : [[
         float sun_disk = smoothstep(sun_angular_cos, sun_angular_cos + 1e-10, cos_theta);
         reflected += (sun_e * load_sun_intensity() * ex) * sun_disk;
 
-        return inscattered + reflected;
+        return (inscattered + reflected);
     }
 ]]
 
