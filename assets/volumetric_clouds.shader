@@ -1,18 +1,11 @@
 depth_stencil_states : {
     depth_test_enable : true
-    depth_write_enable : true
+    depth_write_enable : false
     depth_compare_op : "less_equal"
 }
 
 raster_states : {
     polygon_mode: "fill"
-}
-
-blend_states : {
-    logical_operation_enable: false
-    render_target_0 : {
-        blend_enable: true
-    }
 }
 
 samplers : {
@@ -115,8 +108,8 @@ creation_graph_node : {
     category: "Shader/Output"
 
     inputs : [
-        { name: "cloud_shape" display_name: "Cloud Shape" target: { name: "cloud_shape" element: 0 } optional: false }
-        { name: "cloud_detail" display_name: "Cloud Detail" target: { name: "cloud_detail" element: 0 } optional: false }
+        { name: "cloud_shape" display_name: "Cloud Shape" target: { name: "cloud_shape" } optional: false }
+        { name: "cloud_detail" display_name: "Cloud Detail" target: { name: "cloud_detail" } optional: false }
     ]
 }
 
