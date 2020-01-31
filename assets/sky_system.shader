@@ -12,18 +12,19 @@ common : [[
     #define USE_SKY_SYSTEM
     #define PI 3.1415926
 
-    float phase_function_r(in float mu) {
-        return (3.0 / (16.0 * PI)) * (1.0 + mu * mu);
+    float rayleigh_phase(in float cos_theta) {
+        return (3.0 / (16.0 * PI)) * (1.0 + cos_theta * cos_theta);
     }
 
-    float phase_function_m(in float mu, in float g) {
-        return (1.0 / (4.0 * PI)) * ((1.0 - pow(g, 2.0)) / pow(1.0 - 2.0 * g * mu + pow(g, 2.0), 1.5));
+    float hg_phase(in float cos_theta, in float g) {
+        const float g2 = g * g;
+        return (1.0 / (4.0 * PI)) * ((1.0 - g2) / pow(1.0 - 2.0 * g * cos_theta + g2, 1.5));
     }
 
-    float sun_intensity(in float mu) {
+    float sun_intensity(in float cos_theta) {
         float cutoff = PI / 1.95;
         float steepness = 1.5;
-        return load_sun_intensity() * max(0, 1.0 - exp(-((cutoff - acos(mu)) / steepness)));
+        return load_sun_intensity() * max(0, 1.0 - exp(-((cutoff - acos(cos_theta)) / steepness)));
     }
 
     float3 get_sky_color_physical(in float3 dir) {
@@ -50,8 +51,8 @@ common : [[
 
         // in scattering
         float cos_theta = dot(sun_dir, dir);
-        float r_phase = phase_function_r(cos_theta);
-        float m_phase = phase_function_m(cos_theta, load_mie_g());
+        float r_phase = rayleigh_phase(cos_theta);
+        float m_phase = hg_phase(cos_theta, load_mie_g());
         float3 beta_r_theta = beta_r * r_phase;
         float3 beta_m_theta = beta_m * m_phase;
 
