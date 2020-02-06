@@ -8,13 +8,6 @@ raster_states : {
     polygon_mode: "fill"
 }
 
-// blend_states : {
-//     logical_operation_enable: false
-//     render_target_0 : {
-//         blend_enable: true
-//     }
-// }
-
 samplers : {
     wrap_linear : {
         anisotropy_enable: true
@@ -30,6 +23,7 @@ samplers : {
 imports : [
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
+    { name: "displacement" type: "texture_2d" }
     { name: "weather_texture" type: "texture_2d" }
     { name: "num_steps" type: "uint" }
     { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" }      
@@ -38,18 +32,16 @@ imports : [
 common : [[  
     #define PLANET_RADIUS 6371000
     #define ATMOSPHERE_START 1500
-    #define ATMOSPHERE_THICKNESS 2000
+    #define ATMOSPHERE_THICKNESS 5000
 
-    // temporary stuff!
-    #define CLOUDS_AMBIENT_COLOR_TOP (float3(149., 167., 200.)*(1.5/255.))
-    #define CLOUDS_AMBIENT_COLOR_BOTTOM (float3(39., 67., 87.)*(1.5/255.))
-
-    float remap(in float value, in float old_min, in float old_max, in float new_min, in float new_max) {
+    float remap(in float value, in float old_min, in float old_max, in float new_min, in float new_max) 
+    {
         return new_min + (((value - old_min) / (old_max - old_min)) * (new_max - new_min));
     }
 
-    float linear_step(in float s, in float e, in float v) {
-        return clamp((v - s) / (e - s), 0, 1);
+    float linear_step(in float min, in float max, in float value)
+    {
+        return saturate((value - min) / (max - min));
     }
 
     float3 ray_sphere_intersect(in float radius, in float3 o, in float3 d) {
@@ -61,7 +53,7 @@ common : [[
 
     float height_in_shell(in float3 pos) {
         float y = length(pos) - PLANET_RADIUS - ATMOSPHERE_START;
-        return clamp(y / ATMOSPHERE_THICKNESS, 0, 1);
+        return saturate(y / ATMOSPHERE_THICKNESS);
     }
 
     float height_signal(in float altitude, in float height, in float altitude_start)
@@ -72,64 +64,50 @@ common : [[
         return altitude_diff * (altitude_diff - height) * one_over_height * one_over_height * -4;
     }
 
-    float capture_media_sample(in float3 pos, in float rh) 
+    float capture_sample(in float3 pos, in float rh) 
     {
         Texture3D shape = get_cloud_shape();
-        Texture3D detail = get_cloud_detail();
+        
         SamplerState sampler = get_sampler_wrap_linear();
 
-        const float BASE_SCALE = 0.000151;
-        const float DETAIL_SCALE = 0.00115;
-        const float EDGE_SOFTNESS = 1.0;
-        const float COVERAGE = 0.6; // 0-1
-        const float BOTTOM_FADE = 0.01;
+        const float NOISE_SCALE = 0.000005 * 10;
 
-        float3 wind = float3(0.05, 0.0, 0.05) * load_time() * 0;
+        float coverage = 0.66;
+        float edge_smoothness = 1.0;
+        float3 wind = float3(0.05, 0.0, 0.05) * load_time();
 
-        float3 weather = get_weather_texture().Sample(sampler, pos.xz * 0.00003 + wind * 0.1).rgb;
+        float3 weather = saturate(get_weather_texture().Sample(sampler, pos.xz * 0.000009).rgb);
         
-        float density = weather.r;
-        density = smoothstep(0.0, EDGE_SOFTNESS, density + (COVERAGE - 1));
-        density *= height_signal(rh, 0.7, 0);
-        density *= shape.Sample(sampler, pos * BASE_SCALE + wind).r;
+        float density = smoothstep(0.0, edge_smoothness, weather.r + (coverage - 1));
+        density *= height_signal(rh, 0.4, 0.5);
         
-        // float detail_strength = smoothstep(1.0, 0.5, density);
-        // if (true)
-        {
-            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind).r;
-            
-            // switch between billow and whispy depending on height
-            erosion = lerp(1.0 - erosion, erosion, rh * 0.4) * 0.1;
+        float erosion = 1.0 - shape.Sample(sampler, pos * NOISE_SCALE + wind).r;
+        density = linear_step(erosion, 1, density);
 
-            density -= erosion;
-        }
-        
-        // lower density at bottom
-        // this should be affected by height data
-        density *= smoothstep(0.0, BOTTOM_FADE, rh);
-        return density;
+        return saturate(density);
     }
 
-    float evaluate_light(in float3 sun_dir, in float3 origin) 
+    float volumetric_shadow(in float3 sun_dir, in float3 origin) 
     {
         float step_size = 2;
         float t = step_size * 0.5;
         float shadow = 1.0;
 
         // four steps at expontial growth
-        for (uint step = 0; step < 4; ++step) {
+        for (uint step = 0; step < 5; ++step) {
             float3 p = origin + sun_dir * t;
             float rh = height_in_shell(p);
 
             // outside atmosphere
-            if (rh > 1) return shadow;
-
-            float density = capture_media_sample(p, rh);
+            if (rh > 1) break;
+            
+            float density = capture_sample(p, rh);
             shadow *= exp(-density * step_size);
 
             step_size *= step_size;
             t += step_size;
         }
+        
         return shadow;
     }
 ]]
@@ -172,15 +150,15 @@ pixel_shader : {
 
         if (v.y < 0)
         {
-            output.color = float4(background_color, 1);
+            output.color = float4(0.25, 0.23, 0.21, 1);
             return output;
         }
 
         float3 offset = load_camera_position() + float3(0, PLANET_RADIUS, 0);
         float3 inner = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START, offset, v);
-        float3 outer = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START + ATMOSPHERE_THICKNESS, offset, v);
+        float3 outer = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START + ATMOSPHERE_THICKNESS * 2, offset, v);
 
-        uint steps = 100;
+        uint steps = 512;
         float step_size = distance(inner, outer) / steps;
         float t = step_size * 0.5;
         float3 sun_dir = load_sun_direction();
@@ -190,14 +168,14 @@ pixel_shader : {
         float3 scattered_light = float3(0, 0, 0);
         
         // dual lobe phase function
-        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
+        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.5), 0.5);
 
         for (uint step = 0; step < steps; ++step) {
             float3 pos = inner + v * t;
             // get relative height in atmosphere
             float rh = height_in_shell(pos);
 
-            float density = capture_media_sample(pos, rh);
+            float density = capture_sample(pos, rh);
 
             // evaluate light for density > 0
             // improved scattering equation proposed by S. Hillaire
@@ -205,17 +183,16 @@ pixel_shader : {
             {
                 // note: ambient color can also be multiplied by precipitation here
                 // sample global ambient probe
-                float3 ambient = lerp(CLOUDS_AMBIENT_COLOR_BOTTOM, CLOUDS_AMBIENT_COLOR_TOP, rh);
-                ambient = saturate(2.0 * ambient - 0.5);
-
-                // ambient *= 0.5;
-
-                // sigma_t = sigma_a + sigma_s (extinction)
+                float3 ambient = lerp(float3(0.25, 0.23, 0.21), float3(1, 1, 1) * 0.8, rh);
+                ambient *= 0.8;
 
                 float sigma_sca = 0.125 * density; // scattering coefficient
-                float sigma_ext = (0.125 + 0.06) * density; // scattering extinction
+                float sigma_ext = (0.125 + 0.0622) * density; // scattering extinction
 
-                float3 S = (evaluate_light(sun_dir, pos) * hg_dual_phase + ambient) * sigma_sca;
+                // 150000000
+                float3 sun = float3(1.0, 0.9, 0.7) * load_sun_intensity();
+
+                float3 S = (volumetric_shadow(sun_dir, pos) * sun * float3(1.0, 0.9, 0.7) * hg_dual_phase + ambient) * sigma_sca;
                 float Tr = exp(-sigma_ext * step_size);
                 float3 Sint = (S - S * Tr) / sigma_ext;
 
@@ -224,17 +201,12 @@ pixel_shader : {
             }
 
             // opt out early for low transmittance
-            if (transmittance < 0.01)
-            {
-                // scattered_light = float3(1, 0, 0);
-                break;
-            }
+            if (transmittance < 0.01) break;
 
             t += step_size;
         }
 
         float3 color = scattered_light + background_color * transmittance;
-        // float3 color = scattered_light;
 
         output.color = float4(color, 1);
         return output;
@@ -248,6 +220,7 @@ creation_graph_node : {
 
     inputs : [
         { name: "cloud_shape" display_name: "Cloud Shape" target: { name: "cloud_shape" } optional: false }
+        { name: "displacement" display_name: "Displacement" target: { name: "displacement" } optional: false }
         { name: "cloud_detail" display_name: "Cloud Detail" target: { name: "cloud_detail" } optional: false }
         { name: "weather_texture" display_name: "Weather Texture" target: { name: "weather_texture" } optional: true }
         { name: "num_steps" display_name: "Num Steps" target: { name: "num_steps" } optional: true }
