@@ -32,16 +32,21 @@ imports : [
 common : [[  
     #define PLANET_RADIUS 6371000
     #define ATMOSPHERE_START 1500
-    #define ATMOSPHERE_THICKNESS 5000
+    #define ATMOSPHERE_THICKNESS 2000
 
     float remap(in float value, in float old_min, in float old_max, in float new_min, in float new_max) 
     {
         return new_min + (((value - old_min) / (old_max - old_min)) * (new_max - new_min));
     }
 
-    float linear_step(in float min, in float max, in float value)
+    float linear_step(in float value, in float min, in float max)
     {
         return saturate((value - min) / (max - min));
+    }
+
+    float erode(in float x, in float e)
+    {
+        return max(1 - (1 - x) / e, 0);
     }
 
     float3 ray_sphere_intersect(in float radius, in float3 o, in float3 d) {
@@ -67,23 +72,35 @@ common : [[
     float capture_sample(in float3 pos, in float rh) 
     {
         Texture3D shape = get_cloud_shape();
+        Texture3D detail = get_cloud_detail();
         
         SamplerState sampler = get_sampler_wrap_linear();
 
-        const float NOISE_SCALE = 0.000005 * 10;
+        const float BASE_SCALE = 0.0002;
+        const float DETAIL_SCALE = 0.005;
+        const float WEATHER_SCALE = 0.000033;
 
-        float coverage = 0.66;
+        float coverage = 0.6;
         float edge_smoothness = 1.0;
+        float fade_amount = 1.5;
         float3 wind = float3(0.05, 0.0, 0.05) * load_time();
 
-        float3 weather = saturate(get_weather_texture().Sample(sampler, pos.xz * 0.000009).rgb);
+        float3 weather = get_weather_texture().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
         
-        float density = smoothstep(0.0, edge_smoothness, weather.r + (coverage - 1));
-        density *= height_signal(rh, 0.4, 0.5);
+        float base_cloud = shape.Sample(sampler, pos * BASE_SCALE).r;
         
-        float erosion = 1.0 - shape.Sample(sampler, pos * NOISE_SCALE + wind).r;
-        density = linear_step(erosion, 1, density);
+        float density = 
+            linear_step(weather.r * height_signal(rh, weather.g, weather.b), 1.0 - coverage, 1.0);
 
+        density = erode(density, base_cloud);
+
+        float d = detail.Sample(sampler, pos * DETAIL_SCALE).r;
+        // d = lerp(1.0 - d, d, saturate(rh * 2.0));
+        density = linear_step(density, d * 0.15, 1.0);
+        density *= smoothstep(0.0, fade_amount, rh);
+        
+        // density = smoothstep(0.0, edge_smoothness, density + (coverage - 1));
+        
         return saturate(density);
     }
 
@@ -94,7 +111,7 @@ common : [[
         float shadow = 1.0;
 
         // four steps at expontial growth
-        for (uint step = 0; step < 5; ++step) {
+        for (uint step = 0; step < 4; ++step) {
             float3 p = origin + sun_dir * t;
             float rh = height_in_shell(p);
 
@@ -156,9 +173,9 @@ pixel_shader : {
 
         float3 offset = load_camera_position() + float3(0, PLANET_RADIUS, 0);
         float3 inner = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START, offset, v);
-        float3 outer = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START + ATMOSPHERE_THICKNESS * 2, offset, v);
+        float3 outer = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START + ATMOSPHERE_THICKNESS, offset, v);
 
-        uint steps = 512;
+        uint steps = 100;
         float step_size = distance(inner, outer) / steps;
         float t = step_size * 0.5;
         float3 sun_dir = load_sun_direction();
@@ -169,6 +186,7 @@ pixel_shader : {
         
         // dual lobe phase function
         float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.5), 0.5);
+        float3 sun_color = get_sky_color_physical(sun_dir);
 
         for (uint step = 0; step < steps; ++step) {
             float3 pos = inner + v * t;
@@ -183,16 +201,13 @@ pixel_shader : {
             {
                 // note: ambient color can also be multiplied by precipitation here
                 // sample global ambient probe
-                float3 ambient = lerp(float3(0.25, 0.23, 0.21), float3(1, 1, 1) * 0.8, rh);
-                ambient *= 0.8;
+                float3 ambient = lerp(float3(0.25, 0.23, 0.21), float3(0.9, 0.9, 1) * 0.8, rh);
+                // ambient *= float3(0.9, 0.9, 1);
 
-                float sigma_sca = 0.125 * density; // scattering coefficient
+                float sigma_sca = 0.125 * density;      // scattering coefficient
                 float sigma_ext = (0.125 + 0.0622) * density; // scattering extinction
 
-                // 150000000
-                float3 sun = float3(1.0, 0.9, 0.7) * load_sun_intensity();
-
-                float3 S = (volumetric_shadow(sun_dir, pos) * sun * float3(1.0, 0.9, 0.7) * hg_dual_phase + ambient) * sigma_sca;
+                float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
                 float Tr = exp(-sigma_ext * step_size);
                 float3 Sint = (S - S * Tr) / sigma_ext;
 
