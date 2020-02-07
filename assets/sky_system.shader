@@ -9,7 +9,6 @@ imports : [
 ]
 
 common : [[
-    #define USE_SKY_SYSTEM
     #define PI 3.1415926
 
     float rayleigh_phase(in float cos_theta) {
@@ -27,9 +26,8 @@ common : [[
         return load_sun_intensity() * max(0, 1.0 - exp(-((cutoff - acos(cos_theta)) / steepness)));
     }
 
-    float3 get_sky_color_physical(in float3 dir) {
+    float3 get_sky_color_physical(in float3 dir, out float3 reflected /* sun disk and and reflectance */) {
         float3 sun_dir = normalize(load_sun_direction());
-
         float sun_e = sun_intensity(sun_dir.y);
 
         float3 beta_r = load_beta_r();
@@ -49,7 +47,6 @@ common : [[
         // combined extinction factor
         float3 ex = exp(-beta_r * s_r + beta_m * s_m);
 
-        // in scattering
         float cos_theta = dot(sun_dir, dir);
         float r_phase = rayleigh_phase(cos_theta);
         float m_phase = hg_phase(cos_theta, load_mie_g());
@@ -60,14 +57,15 @@ common : [[
         float3 inscattered = pow(sun_e * betas * (1.0 - ex), float3(1.5, 1.5, 1.5));
         inscattered *= lerp(float3(1.0, 1.0, 1.0), pow(sun_e * betas * ex, float3(0.5, 0.5, 0.5)), clamp(pow(1.0 - sun_dir.y, 5.0), 0, 1));
 
-        float3 reflected = ex * 0.1;
+        // input parameter
+        reflected = ex * 0.1;
 
         // sun disk
         float sun_angular_cos = 1 - (load_sun_size() * 1e-4);
         float sun_disk = smoothstep(sun_angular_cos, sun_angular_cos + 1e-10, cos_theta);
-        reflected += (sun_e * load_sun_intensity() * ex) * sun_disk;
+        reflected += (sun_e * 150000.0 * ex * sun_disk);
 
-        return (inscattered + reflected);
+        return inscattered;
     }
 ]]
 

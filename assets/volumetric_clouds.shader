@@ -76,42 +76,35 @@ common : [[
         
         SamplerState sampler = get_sampler_wrap_linear();
 
-        const float BASE_SCALE = 0.0002;
-        const float DETAIL_SCALE = 0.005;
-        const float WEATHER_SCALE = 0.000033;
+        const float BASE_SCALE = 0.0003;
+        const float DETAIL_SCALE = 0.0005;
+        const float WEATHER_SCALE = 0.00004;
 
-        float coverage = 0.6;
-        float edge_smoothness = 1.0;
-        float fade_amount = 1.5;
+        float coverage = 0.9;
+        float fade_amount = 15;
         float3 wind = float3(0.05, 0.0, 0.05) * load_time();
 
         float3 weather = get_weather_texture().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
         
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE).r;
-        
-        float density = 
-            linear_step(weather.r * height_signal(rh, weather.g, weather.b), 1.0 - coverage, 1.0);
 
+        float density = linear_step(weather.r * height_signal(rh, weather.g, weather.b), 1.0 - coverage, 1.0);
         density = erode(density, base_cloud);
 
         float d = detail.Sample(sampler, pos * DETAIL_SCALE).r;
-        // d = lerp(1.0 - d, d, saturate(rh * 2.0));
-        density = linear_step(density, d * 0.15, 1.0);
-        density *= smoothstep(0.0, fade_amount, rh);
+        // d = lerp(d, 1.0 - d, rh);
+        density = erode(density, d);
         
-        // density = smoothstep(0.0, edge_smoothness, density + (coverage - 1));
-        
-        return saturate(density);
+        return saturate(density * (rh / fade_amount));
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) 
     {
-        float step_size = 2;
+        uint steps = 4;
+        float step_size = ATMOSPHERE_THICKNESS / steps;
         float t = step_size * 0.5;
         float shadow = 1.0;
-
-        // four steps at expontial growth
-        for (uint step = 0; step < 4; ++step) {
+        for (uint step = 0; step < steps; ++step) {
             float3 p = origin + sun_dir * t;
             float rh = height_in_shell(p);
 
@@ -124,7 +117,6 @@ common : [[
             step_size *= step_size;
             t += step_size;
         }
-        
         return shadow;
     }
 ]]
@@ -163,11 +155,10 @@ pixel_shader : {
 
     code : [[
         float3 v = normalize(input.camera_ray);
-        float3 background_color = get_sky_color_physical(v);
 
         if (v.y < 0)
         {
-            output.color = float4(0.25, 0.23, 0.21, 1);
+            output.color = float4(0.02, 0.02, 0.02, 1);
             return output;
         }
 
@@ -175,7 +166,7 @@ pixel_shader : {
         float3 inner = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START, offset, v);
         float3 outer = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START + ATMOSPHERE_THICKNESS, offset, v);
 
-        uint steps = 100;
+        uint steps = 128;
         float step_size = distance(inner, outer) / steps;
         float t = step_size * 0.5;
         float3 sun_dir = load_sun_direction();
@@ -185,8 +176,11 @@ pixel_shader : {
         float3 scattered_light = float3(0, 0, 0);
         
         // dual lobe phase function
-        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.5), 0.5);
-        float3 sun_color = get_sky_color_physical(sun_dir);
+        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
+
+        float3 reflected;
+        float3 sun_color = get_sky_color_physical(sun_dir, reflected);
+        float3 sky_light = get_sky_color_physical(float3(0, -1, 0), reflected);
 
         for (uint step = 0; step < steps; ++step) {
             float3 pos = inner + v * t;
@@ -201,14 +195,14 @@ pixel_shader : {
             {
                 // note: ambient color can also be multiplied by precipitation here
                 // sample global ambient probe
-                float3 ambient = lerp(float3(0.25, 0.23, 0.21), float3(0.9, 0.9, 1) * 0.8, rh);
-                // ambient *= float3(0.9, 0.9, 1);
+                float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
 
                 float sigma_sca = 0.125 * density;      // scattering coefficient
-                float sigma_ext = (0.125 + 0.0622) * density; // scattering extinction
+                float sigma_ext = (sigma_sca + 0.05) * density; // scattering extinction
 
                 float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
-                float Tr = exp(-sigma_ext * step_size);
+
+                float Tr = exp(-sigma_ext * log(2.0) * step_size);
                 float3 Sint = (S - S * Tr) / sigma_ext;
 
                 scattered_light += transmittance * Sint;
@@ -221,7 +215,8 @@ pixel_shader : {
             t += step_size;
         }
 
-        float3 color = scattered_light + background_color * transmittance;
+        float3 background_color = get_sky_color_physical(v, reflected);
+        float3 color = scattered_light + (background_color + reflected) * transmittance;
 
         output.color = float4(color, 1);
         return output;
