@@ -21,9 +21,8 @@ common : [[
     }
 
     float sun_intensity(in float cos_theta) {
-        float cutoff = PI / 1.95;
-        float steepness = 1.5;
-        return load_sun_intensity() * max(0, 1.0 - exp(-((cutoff - acos(cos_theta)) / steepness)));
+        const float steepness = 1.4142136; // sqrt(2)
+        return load_sun_intensity() * max(0, 1.0 - exp(-((PI / steepness - acos(cos_theta)) / steepness)));
     }
 
     float3 get_sky_color_physical(in float3 dir, out float3 reflected /* sun disk and and reflectance */) {

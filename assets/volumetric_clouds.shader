@@ -69,39 +69,37 @@ common : [[
         return altitude_diff * (altitude_diff - height) * one_over_height * one_over_height * -4;
     }
 
-    float capture_sample(in float3 pos, in float rh) 
+    float capture_sample(float3 pos, in float rh) 
     {
         Texture3D shape = get_cloud_shape();
         Texture3D detail = get_cloud_detail();
         
         SamplerState sampler = get_sampler_wrap_linear();
 
-        const float BASE_SCALE = 0.0003;
-        const float DETAIL_SCALE = 0.0005;
+        const float BASE_SCALE = 0.000151;
+        const float DETAIL_SCALE = 0.0012;
         const float WEATHER_SCALE = 0.00004;
 
-        float coverage = 0.9;
-        float fade_amount = 15;
-        float3 wind = float3(0.05, 0.0, 0.05) * load_time();
+        float coverage = 0.5;
+        float fade_amount = 5;
+        float3 wind = float3(0.05, 0.0, 0.05) * load_time() * 0.5;
 
         float3 weather = get_weather_texture().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
-        
-        float base_cloud = shape.Sample(sampler, pos * BASE_SCALE).r;
 
-        float density = linear_step(weather.r * height_signal(rh, weather.g, weather.b), 1.0 - coverage, 1.0);
-        density = erode(density, base_cloud);
+        float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
 
-        float d = detail.Sample(sampler, pos * DETAIL_SCALE).r;
-        // d = lerp(d, 1.0 - d, rh);
-        density = erode(density, d);
+        float density = remap(base_cloud * height_signal(rh, 1.0, 0.0), 1.0 - weather.r, 1.0, 0.0, 1.0);
         
+        float erosion = detail.Sample(sampler, pos * DETAIL_SCALE).r;
+        density = remap(density, erosion * 0.5, 1.0, 0.0, 1.0);
+
         return saturate(density * (rh / fade_amount));
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) 
     {
         uint steps = 4;
-        float step_size = ATMOSPHERE_THICKNESS / steps;
+        float step_size = 2;
         float t = step_size * 0.5;
         float shadow = 1.0;
         for (uint step = 0; step < steps; ++step) {
@@ -166,7 +164,7 @@ pixel_shader : {
         float3 inner = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START, offset, v);
         float3 outer = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START + ATMOSPHERE_THICKNESS, offset, v);
 
-        uint steps = 128;
+        uint steps = 100;
         float step_size = distance(inner, outer) / steps;
         float t = step_size * 0.5;
         float3 sun_dir = load_sun_direction();
@@ -201,8 +199,7 @@ pixel_shader : {
                 float sigma_ext = (sigma_sca + 0.05) * density; // scattering extinction
 
                 float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
-
-                float Tr = exp(-sigma_ext * log(2.0) * step_size);
+                float Tr = exp(-sigma_ext * step_size);
                 float3 Sint = (S - S * Tr) / sigma_ext;
 
                 scattered_light += transmittance * Sint;
