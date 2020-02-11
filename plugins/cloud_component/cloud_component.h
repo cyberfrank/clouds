@@ -9,15 +9,8 @@ struct tm_api_registry_api;
 enum {
     TM_TT_PROP__CLOUD_COMPONENT__QUALITY, // uint32
     TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, // float
-    TM_TT_PROP__CLOUD_COMPONENT__SHAPE_TEXTURE, // reference(TM_TT_TYPE__ASSET)
-    TM_TT_PROP__CLOUD_COMPONENT__DETAIL_TEXTURE, // reference(TM_TT_TYPE__ASSET)
-};
-
-enum {
-    TM_CLOUD_QUALITY_LOW,
-    TM_CLOUD_QUALITY_MEDIUM,
-    TM_CLOUD_QUALITY_HIGH,
-    TM_CLOUD_QUALITY_ULTRA,
+    TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, // float
+    TM_TT_PROP__CLOUD_COMPONENT__TEXTURES, // reference(TM_TT_TYPE__ASSET)
 };
 
 TM_DLL_EXPORT void load_cloud_component(struct tm_api_registry_api *reg, bool load);

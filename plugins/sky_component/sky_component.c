@@ -110,7 +110,7 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
     struct tm_renderer_resource_command_buffer_o *res_buf, const tm_transform_t *transforms, const uint32_t *transform_indices,
     void **component_data, uint32_t num_components, const uint8_t *frustum_visibility)
 {
-    TM_INIT_TEMP_ALLOCATOR_WITH_ADAPTER(ta, a);
+    TM_INIT_TEMP_ALLOCATOR(ta);
 
     tm_shader_system_o *sky_system = tm_shader_repository_api->lookup_system(manager->repo, TM_STATIC_HASH("sky_system", 0x5c859d66c1b97863ULL));
 
@@ -149,9 +149,9 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &cbufs[i], TM_STATIC_HASH("beta_m", 0x23064f493604e286ULL), &beta_m, sizeof(tm_vec3_t));
         set_constant(io, res_buf, &cbufs[i], TM_STATIC_HASH("mie_g", 0x34bf34b177ceac3fULL), &c->mie_g, sizeof(float));  
         set_constant(io, res_buf, &cbufs[i], TM_STATIC_HASH("turbidity", 0x8cda52201e65a661ULL), &c->turbidity, sizeof(float));
-    }
 
-    //tm_shader_system_api->deactivate_system(shader_context, sky_system);
+    }
+    // tm_shader_system_api->deactivate_system(shader_context, sky_system);
     tm_shader_api->destroy_constant_buffer_instances(io, cbufs, num_components);
 
     TM_SHUTDOWN_TEMP_ALLOCATOR(ta);

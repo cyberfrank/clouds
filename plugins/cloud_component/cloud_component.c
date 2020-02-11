@@ -58,11 +58,15 @@ typedef struct tm_cloud_component_t {
 
     uint32_t quality;
     float coverage;
+    float precipitation;
+
+    // volume textures
     struct
     {
         uint64_t asset;
         uint64_t version;
-    } shape_texture, detail_texture;
+    } textures;
+
 } tm_cloud_component_t;
 
 typedef struct tm_component_manager_o
@@ -110,6 +114,9 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
         },
         .depth_stencil_target = {
             .name = TM_DEFAULT_RENDER_PIPE_MAIN_DEPTH_STENCIL_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD
+        },
+        .input_slots = {
+            { .slot_name = TM_STATIC_HASH("image", 0x284126856b22844eULL), .resources = { { TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION } } }
         },
         .shader = TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL)
     }, "Volumetric Clouds");
@@ -189,22 +196,32 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
     {
         tm_cloud_component_t *c = cdata[i];
 
+        uint32_t num_steps = (c->quality + 1) << 3;
+        set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
         set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
+        set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("precipitation", 0x30d73ebc265650e0ULL), &c->precipitation, sizeof(float));
 
-        if (c->shape_texture.asset) {
-            uint64_t wanted_version = tm_creation_graph_api->graph_version(c->shape_texture.asset);
-            if (wanted_version != c->shape_texture.version) {
-                tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->shape_texture.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
-                c->shape_texture.version = image_output.version;
+        if (c->textures.asset) {
+            uint64_t wanted_version = tm_creation_graph_api->graph_version(c->textures.asset);
+            if (wanted_version != c->textures.version) {
+                tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->textures.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
+                c->textures.version = image_output.version;
 
-                tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
+                tm_creation_graph_image_data_t *images = (tm_creation_graph_image_data_t *)image_output.output;
+                TM_LOG("Loaded %i creation graph resources.\n", image_output.num_output_objects);
                 
-                const char *format = tm_buffer_format_api->human_readable(image->desc.format, ta);
-                TM_LOG("resource %i: %ix%ix%i %s\n", image->handle, image->desc.width, image->desc.height, image->desc.depth, format);
-                set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("cloud_shape", 0xecbca377104137c2ULL), &image->handle, 0, 0, 1);
+                tm_creation_graph_image_data_t *cloud_shape = &images[0];
+                tm_creation_graph_image_data_t *detail_shape = &images[1];
+
+                if (cloud_shape->handle && cloud_shape->desc.type == TM_RENDERER_IMAGE_TYPE_3D) {
+                    set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("cloud_shape", 0xecbca377104137c2ULL), &cloud_shape->handle, 0, 0, 1);
+                }
+
+                if (detail_shape->handle && detail_shape->desc.type == TM_RENDERER_IMAGE_TYPE_3D) {
+                    set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("cloud_detail", 0x7955716250d5b1bcULL), &detail_shape->handle, 0, 0, 1);
+                }
             }
         }
-
     }
 
     tm_shader_api->destroy_constant_buffer_instances(io, cbuffer, num_components);
@@ -218,6 +235,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_property_definition_t properties[] = {
         { "quality", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "coverage", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
+        { "precipitation", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "cloud_shape", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
         { "cloud_detail", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
     };
@@ -228,8 +246,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_aspect(tt, object_type, TM_CI_SHADER, shader_aspect);
     tm_the_truth_api->set_aspect(tt, object_type, TM_CI_EDITOR_UI, editor_aspect);
     tm_the_truth_api->set_aspect(tt, object_type, TM_TT_ASPECT__PROPERTIES, properties_aspect);
-    tm_the_truth_api->set_property_aspect(tt, object_type, TM_TT_PROP__CLOUD_COMPONENT__SHAPE_TEXTURE, TM_TT_PROP_ASPECT__PROPERTIES__ASSET_PICKER, TM_TT_TYPE__CREATION_GRAPH);
-    tm_the_truth_api->set_property_aspect(tt, object_type, TM_TT_PROP__CLOUD_COMPONENT__DETAIL_TEXTURE, TM_TT_PROP_ASPECT__PROPERTIES__ASSET_PICKER, TM_TT_TYPE__CREATION_GRAPH);
+    tm_the_truth_api->set_property_aspect(tt, object_type, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES, TM_TT_PROP_ASPECT__PROPERTIES__ASSET_PICKER, TM_TT_TYPE__CREATION_GRAPH);
 }
 
 void load_asset(tm_component_manager_o *manager, tm_entity_t e, void *data, const struct tm_the_truth_o *tt, uint64_t asset)
@@ -239,11 +256,12 @@ void load_asset(tm_component_manager_o *manager, tm_entity_t e, void *data, cons
 
     c->quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
     c->coverage = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE);
+    c->precipitation = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION);
 
-    uint64_t ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SHAPE_TEXTURE);
-    if (ref && ref != c->shape_texture.asset) {
-        c->shape_texture.asset = ref;
-        c->shape_texture.version = 0;
+    uint64_t ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES);
+    if (ref && ref != c->textures.asset) {
+        c->textures.asset = ref;
+        c->textures.version = 0;
     }
 }
 
@@ -326,9 +344,9 @@ void load_cloud_component(struct tm_api_registry_api *reg, bool load)
 
 static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_rect, uint64_t object, uint32_t indent)
 {
-    tm_properties_float_slider_t slider = {
-        .min = 0,
-        .max = 1,
+    tm_properties_float_slider_t slider01 = {
+        .min = 0.0,
+        .max = 1.0,
     };
 
     const char* options[] = {
@@ -338,10 +356,21 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
         "Ultra",
     };
 
-    item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Coverage", 0, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, &slider);
     item_rect.y = tm_properties_view_api->ui_uint32_dropdown(args, item_rect, "Quality", 0, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, options, 0, TM_ARRAY_COUNT(options));
-    item_rect.y = tm_properties_view_api->ui_reference(args, item_rect, "Cloud Shape", 0, object, TM_TT_PROP__CLOUD_COMPONENT__SHAPE_TEXTURE);
-    item_rect.y = tm_properties_view_api->ui_reference(args, item_rect, "Cloud Detail", 0, object, TM_TT_PROP__CLOUD_COMPONENT__DETAIL_TEXTURE);
+
+    bool show_weather = false;
+    item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Weather", 0, object, indent, true, &show_weather);
+    if (show_weather) {
+        item_rect.x += TM_PROPERTIES_METRIC_INDENT;
+        item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Coverage", 0, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, &slider01);
+        item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Precipitation", 0, object, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, &slider01);
+    }
+    bool show_config = false;
+    item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Configuration", 0, object, indent, false, &show_config);
+    if (show_config) {
+        item_rect.x += TM_PROPERTIES_METRIC_INDENT;
+        item_rect.y = tm_properties_view_api->ui_reference(args, item_rect, "Textures", "Base shape and detail volume textures", object, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES);
+    }
     
     return item_rect.y;
 }

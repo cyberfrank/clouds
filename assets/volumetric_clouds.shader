@@ -23,10 +23,13 @@ samplers : {
 imports : [
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
-    { name: "displacement" type: "texture_2d" }
     { name: "weather_texture" type: "texture_2d" }
     { name: "num_steps" type: "uint" }
-    { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" }      
+    { name: "coverage" type: "float" }
+    { name: "precipitation" type: "float" }
+    { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" }     
+    // main hdr accumulation output 
+    { name: "image" type: "texture_2d" }
 ]
 
 common : [[  
@@ -80,18 +83,18 @@ common : [[
         const float DETAIL_SCALE = 0.0012;
         const float WEATHER_SCALE = 0.00004;
 
-        float coverage = 0.5;
+        float coverage = load_coverage();
         float fade_amount = 5;
         float3 wind = float3(0.05, 0.0, 0.05) * load_time() * 0.5;
 
-        float3 weather = get_weather_texture().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
+        // float3 weather = get_weather_texture().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
 
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
 
-        float density = remap(base_cloud * height_signal(rh, 1.0, 0.0), 1.0 - weather.r, 1.0, 0.0, 1.0);
+        float density = remap(base_cloud * height_signal(rh, 1.0, 0.0), 1.0 - coverage, 1.0, 0.0, 1.0);
         
-        float erosion = detail.Sample(sampler, pos * DETAIL_SCALE).r;
-        density = remap(density, erosion * 0.5, 1.0, 0.0, 1.0);
+        // float erosion = detail.Sample(sampler, pos * DETAIL_SCALE).r;
+        // density = remap(density, erosion * 0.5, 1.0, 0.0, 1.0);
 
         return saturate(density * (rh / fade_amount));
     }
@@ -133,14 +136,10 @@ vertex_shader : {
             { -1, -3,  1, 1 },
         };
     
-        bool taa_enabled = load_settings_mask() & SETTINGS_TAA_ENABLED;
-        output.position = taa_enabled ? add_taa_offset(pos[input.vertex_id], load_frame_number(), load_render_target_resolution()) : pos[input.vertex_id];
+        output.position = pos[input.vertex_id];
 
         float4x4 inverse_view = load_camera_inverse_view();
-        
-        float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
-        cp = taa_enabled ? remove_taa_offset(cp, load_frame_number(), load_render_target_resolution()) : cp;
-        float4 p = mul(cp, load_camera_inverse_projection());
+        float4 p = mul(float4(pos[input.vertex_id].xy, 1, 1), load_camera_inverse_projection());
         output.camera_ray = mul(p.xyz, (float3x3)inverse_view);
         return output;
     ]]
@@ -164,15 +163,15 @@ pixel_shader : {
         float3 inner = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START, offset, v);
         float3 outer = ray_sphere_intersect(PLANET_RADIUS + ATMOSPHERE_START + ATMOSPHERE_THICKNESS, offset, v);
 
-        uint steps = 100;
+        uint steps = load_num_steps();
         float step_size = distance(inner, outer) / steps;
-        float t = step_size * 0.5;
-        float3 sun_dir = load_sun_direction();
-        float cos_theta = dot(v, sun_dir);
+        float t = step_size * halton_sequence_2d(load_frame_number()).x;
 
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         
+        float3 sun_dir = load_sun_direction();
+        float cos_theta = dot(v, sun_dir);
         // dual lobe phase function
         float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
 
@@ -187,15 +186,12 @@ pixel_shader : {
 
             float density = capture_sample(pos, rh);
 
-            // evaluate light for density > 0
-            // improved scattering equation proposed by S. Hillaire
+            // improved scattering equation proposed by Seb Hillaire
             if (density > 0)
             {
-                // note: ambient color can also be multiplied by precipitation here
-                // sample global ambient probe
-                float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
+                float3 ambient = sky_light * smoothstep(0.0, 1.0, rh) * (1.0 - load_precipitation());
 
-                float sigma_sca = 0.125 * density;      // scattering coefficient
+                float sigma_sca = 0.125 * density;              // scattering coefficient
                 float sigma_ext = (sigma_sca + 0.05) * density; // scattering extinction
 
                 float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
@@ -212,6 +208,26 @@ pixel_shader : {
             t += step_size;
         }
 
+        /*
+        Offset starting step in range 0-1
+        Calculate world position of P in clip space position using current inv view projection
+
+        Pwp = Pcs * (VP)^-1
+
+        Calculate P'cs, the position P from last frame. Multiply Pwp and the last view projection
+        P'cs = Pwp * (VP)last
+
+        Sample previous frame at position P'
+        Cp' = texture(P')
+
+        Blend between current and previous frame with blend faction 'a'
+        Cp * a + Cp' * (1 - a)
+
+        */
+
+        float4 clip_space_position = input.position;
+        float4 position = mul(clip_space_position, load_camera_inverse_view_projection());
+
         float3 background_color = get_sky_color_physical(v, reflected);
         float3 color = scattered_light + (background_color + reflected) * transmittance;
 
@@ -220,24 +236,24 @@ pixel_shader : {
     ]]
 }
 
-creation_graph_node : {
-    name: "volumetric_clouds"
-    display_name: "Volumetric Clouds"
-    category: "Shader/Output"
+// creation_graph_node : {
+//     name: "volumetric_clouds"
+//     display_name: "Volumetric Clouds"
+//     category: "Shader/Output"
 
-    inputs : [
-        { name: "cloud_shape" display_name: "Cloud Shape" target: { name: "cloud_shape" } optional: false }
-        { name: "displacement" display_name: "Displacement" target: { name: "displacement" } optional: false }
-        { name: "cloud_detail" display_name: "Cloud Detail" target: { name: "cloud_detail" } optional: false }
-        { name: "weather_texture" display_name: "Weather Texture" target: { name: "weather_texture" } optional: true }
-        { name: "num_steps" display_name: "Num Steps" target: { name: "num_steps" } optional: true }
-    ]
-}
+//     inputs : [
+//         { name: "cloud_shape" display_name: "Cloud Shape" target: { name: "cloud_shape" } optional: false }
+//         { name: "displacement" display_name: "Displacement" target: { name: "displacement" } optional: false }
+//         { name: "cloud_detail" display_name: "Cloud Detail" target: { name: "cloud_detail" } optional: false }
+//         { name: "weather_texture" display_name: "Weather Texture" target: { name: "weather_texture" } optional: true }
+//         { name: "num_steps" display_name: "Num Steps" target: { name: "num_steps" } optional: true }
+//     ]
+// }
 
 compile : {
     includes : [ "common", "sampling" ]
 
-    variations : [        
+    variations : [
         { systems : [ "frame_system", "viewer_system", "sky_system" ] },
     ]
 }

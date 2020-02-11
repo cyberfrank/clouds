@@ -68,5 +68,5 @@ common : [[
     }
 ]]
 
-system : {    
+system : {
 }
