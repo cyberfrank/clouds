@@ -80,14 +80,14 @@ project "cloud-component"
     filter { "platforms:MacOSX" }
         targetdir "%TM_PRE_ALPHA_DIR%/bin/plugins"
 
-project "sky-component"
-    location "build/sky_component"
-    kind "SharedLib"
-    language "C++"
-    targetdir "bin/%{cfg.buildcfg}/plugins"
-    dependson {"foundation", "entity"}
-    files { "plugins/sky_component/**.inl", "plugins/sky_component/**.h", "plugins/sky_component/**.c" }
-    filter "platforms:Win64"
-        targetdir "$(TM_PRE_ALPHA_DIR)/bin/plugins"
-    filter { "platforms:MacOSX" }
-        targetdir "%TM_PRE_ALPHA_DIR%/bin/plugins"
+-- project "sky-component"
+--     location "build/sky_component"
+--     kind "SharedLib"
+--     language "C++"
+--     targetdir "bin/%{cfg.buildcfg}/plugins"
+--     dependson {"foundation", "entity"}
+--     files { "plugins/sky_component/**.inl", "plugins/sky_component/**.h", "plugins/sky_component/**.c" }
+--     filter "platforms:Win64"
+--         targetdir "$(TM_PRE_ALPHA_DIR)/bin/plugins"
+--     filter { "platforms:MacOSX" }
+--         targetdir "%TM_PRE_ALPHA_DIR%/bin/plugins"

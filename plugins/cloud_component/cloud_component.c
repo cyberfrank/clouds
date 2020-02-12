@@ -104,22 +104,32 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
     (void)res;
 }
 
+#define TM_VOLUMETRIC_CLOUDS_HISTORY TM_STATIC_HASH("volumetric_clouds_history", 0xb68721c809712c0bULL)
+
 static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_manager_o *manager)
 {
     tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
 
-    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t) {
+    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
         .color_targets = {
-            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD }
+            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD },
         },
         .depth_stencil_target = {
             .name = TM_DEFAULT_RENDER_PIPE_MAIN_DEPTH_STENCIL_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD
         },
         .input_slots = {
-            { .slot_name = TM_STATIC_HASH("image", 0x284126856b22844eULL), .resources = { { TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION } } }
+            { .slot_name = TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), .resources = { { TM_VOLUMETRIC_CLOUDS_HISTORY } } },
         },
-        .shader = TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL)
+        .shader = TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL),
     }, "Volumetric Clouds");
+
+    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
+        .color_targets = {
+            { .name = TM_VOLUMETRIC_CLOUDS_HISTORY, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD } },
+        .shader = TM_STATIC_HASH("copy", 0xd996b7bdf040ea8bULL),
+        .output_pass = true,
+        .input_slots = { { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION } } } }
+    }, "Volumetric Clouds Copy");
 
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
         .submenu_name = "Cloud Module",
@@ -132,6 +142,7 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
 static void graph_module_inject(struct tm_component_manager_o *manager, struct tm_render_graph_module_o *module)
 {
+    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_VOLUMETRIC_CLOUDS_HISTORY, 0, TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION);
     tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
 }
 
@@ -141,12 +152,7 @@ static bool set_constant(tm_shader_io_o *io, tm_renderer_resource_command_buffer
     tm_shader_constant_t constant;
     uint32_t constant_offset;
     if (tm_shader_api->lookup_constant(io, name, &constant, &constant_offset)) {
-        tm_shader_api->update_constants(io, res_buf, &(tm_shader_constant_update_t) {
-            .instance_id = instance->instance_id,
-            .constant_offset = constant_offset,
-            .num_bytes = data_size,
-            .data = data,
-        }, 1);
+        tm_shader_api->update_constants(io, res_buf, &(tm_shader_constant_update_t) { .instance_id = instance->instance_id, .constant_offset = constant_offset, .num_bytes = data_size, .data = data }, 1);
         return true;
     }
     return false;
@@ -158,14 +164,7 @@ static bool set_resource(tm_shader_io_o *io, tm_renderer_resource_command_buffer
     tm_shader_resource_t resource;
     uint32_t resource_slot;
     if (tm_shader_api->lookup_resource(io, name, &resource, &resource_slot)) {
-        tm_shader_api->update_resources(io, res_buf, &(tm_shader_resource_update_t) {
-            .instance_id = instance->instance_id,
-            .resource_slot = resource_slot,
-            .first_resource = first_resource,
-            .num_resources = n_resources,
-            .resources = resource_handle,
-            .resources_view_aspect_flags = aspect_flags,
-        }, 1);
+        tm_shader_api->update_resources(io, res_buf, &(tm_shader_resource_update_t){ .instance_id = instance->instance_id, .resource_slot = resource_slot, .first_resource = first_resource, .num_resources = n_resources, .resources = resource_handle, .resources_view_aspect_flags = aspect_flags }, 1);
         return true;
     }
     return false;
@@ -192,34 +191,21 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
 
     tm_cloud_component_t **cdata = (tm_cloud_component_t **)component_data;
 
-    for (uint32_t i = 0; i < num_components; ++i)
-    {
+    for (uint32_t i = 0; i < num_components; ++i) {
         tm_cloud_component_t *c = cdata[i];
 
         uint32_t num_steps = (c->quality + 1) << 3;
         set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
-        set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
-        set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("precipitation", 0x30d73ebc265650e0ULL), &c->precipitation, sizeof(float));
 
-        if (c->textures.asset) {
-            uint64_t wanted_version = tm_creation_graph_api->graph_version(c->textures.asset);
-            if (wanted_version != c->textures.version) {
-                tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->textures.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
-                c->textures.version = image_output.version;
+        uint64_t wanted_version = tm_creation_graph_api->graph_version(c->textures.asset);
+        if (wanted_version != c->textures.version) {
+            tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->textures.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
+            c->textures.version = image_output.version;
 
-                tm_creation_graph_image_data_t *images = (tm_creation_graph_image_data_t *)image_output.output;
-                TM_LOG("Loaded %i creation graph resources.\n", image_output.num_output_objects);
-                
-                tm_creation_graph_image_data_t *cloud_shape = &images[0];
-                tm_creation_graph_image_data_t *detail_shape = &images[1];
-
-                if (cloud_shape->handle && cloud_shape->desc.type == TM_RENDERER_IMAGE_TYPE_3D) {
-                    set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("cloud_shape", 0xecbca377104137c2ULL), &cloud_shape->handle, 0, 0, 1);
-                }
-
-                if (detail_shape->handle && detail_shape->desc.type == TM_RENDERER_IMAGE_TYPE_3D) {
-                    set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("cloud_detail", 0x7955716250d5b1bcULL), &detail_shape->handle, 0, 0, 1);
-                }
+            tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
+            TM_LOG("Loaded %i creation graph resources.\n", image_output.num_output_objects);  
+            if (set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("test", 0x2f4a8724618f4c63ULL), &image->handle, 0, 0, 1)) {
+                // 
             }
         }
     }
@@ -236,8 +222,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
         { "quality", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "coverage", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "precipitation", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
-        { "cloud_shape", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
-        { "cloud_detail", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
+        { "textures", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
     };
 
     const uint64_t object_type = tm_the_truth_api->create_object_type(tt, TM_TT_TYPE__CLOUD_COMPONENT, properties, TM_ARRAY_COUNT(properties));
@@ -304,6 +289,9 @@ void create_component(struct tm_entity_context_o *ctx)
         .allocator = a,
         .repo = repo,
     };
+
+    // 
+    tm_creation_graph_api->create_truth_types(manager->tt);
 
     // create cloud module
     manager->module = create_volumetric_cloud_module(manager);
@@ -377,7 +365,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
 
 static tm_ci_shader_i *shader_aspect = &(tm_ci_shader_i) {
     .graph_module_inject = graph_module_inject,
-    .update = update
+    // .update = update
 };
 
 static tm_ci_editor_ui_i *editor_aspect = &(tm_ci_editor_ui_i) {
