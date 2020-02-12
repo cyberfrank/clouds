@@ -365,7 +365,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
 
 static tm_ci_shader_i *shader_aspect = &(tm_ci_shader_i) {
     .graph_module_inject = graph_module_inject,
-    // .update = update
+    .update = update
 };
 
 static tm_ci_editor_ui_i *editor_aspect = &(tm_ci_editor_ui_i) {
