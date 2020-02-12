@@ -1,9 +1,0 @@
-{
-    "files.associations": {
-        "*.shader": "hlsl",
-        "math.inl": "c",
-        "toolbox_common.h": "c",
-        "editor_ui_interface.h": "c",
-        "render_context.h": "c"
-    }
-}
