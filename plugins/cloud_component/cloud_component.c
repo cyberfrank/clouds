@@ -48,6 +48,8 @@ struct tm_shader_api *tm_shader_api;
 struct tm_shader_system_api *tm_shader_system_api;
 struct tm_shader_repository_api *tm_shader_repository_api;
 struct tm_buffer_format_api *tm_buffer_format_api; 
+struct tm_render_graph_setup_api *tm_render_graph_setup_api;
+struct tm_render_graph_execute_api *tm_render_graph_execute_api;
 
 static tm_ci_shader_i *shader_aspect;
 static tm_ci_editor_ui_i *editor_aspect;
@@ -55,6 +57,9 @@ static tm_properties_aspect_i *properties_aspect;
 struct tm_render_graph_editor_submenu_i *tm_render_graph_editor_submenu_i;
 
 typedef struct tm_cloud_component_t {
+    tm_shader_o *shader;
+    tm_shader_constant_buffer_instance_t cbuffer;
+    tm_shader_resource_binder_instance_t rbinder;
 
     uint32_t quality;
     float coverage;
@@ -66,7 +71,6 @@ typedef struct tm_cloud_component_t {
         uint64_t asset;
         uint64_t version;
     } textures;
-
 } tm_cloud_component_t;
 
 typedef struct tm_component_manager_o
@@ -78,6 +82,8 @@ typedef struct tm_component_manager_o
     tm_shader_repository_o *repo;
 
     tm_render_graph_module_o *module;
+
+    tm_cloud_component_t *active_cloud_component;
 
     struct
     {
@@ -104,32 +110,78 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
     (void)res;
 }
 
+typedef struct cloud_pass_runtime_data_t
+{
+    tm_shader_o *shader;
+    tm_shader_constant_buffer_instance_t cbuffer;
+    tm_shader_resource_binder_instance_t rbinder;
+} cloud_pass_runtime_data_t;
+
+static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_render_graph_setup_o *graph_setup)
+{
+    struct tm_component_manager_o *manager = *(tm_component_manager_o **)const_data;
+    tm_cloud_component_t *c = manager->active_cloud_component;
+    bool active = c != 0;
+
+    tm_render_graph_setup_api->set_active(graph_setup, active);
+    if (!active)
+        return;
+
+    tm_pass_render_target_t color_targets[TM_MAX_RENDER_TARGETS] = {
+        { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD, .store_op = TM_RENDERER_RESOURCE_STORE_OP_STORE }
+    };
+    tm_pass_render_target_t depth_stencil_target = {
+        .name = TM_DEFAULT_RENDER_PIPE_MAIN_DEPTH_STENCIL_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD
+    };
+
+    tm_render_graph_toolbox_api->setup_render_target_writes(color_targets, &depth_stencil_target, graph_setup);
+
+    cloud_pass_runtime_data_t *rdata = (cloud_pass_runtime_data_t*)runtime_data;
+    *rdata = (cloud_pass_runtime_data_t) {
+        .shader = c->shader,
+        .cbuffer = c->cbuffer,
+        .rbinder = c->rbinder,
+    };
+}
+
+static void cloud_pass_execute(const void *const_data, void *runtime_data, uint64_t sort_key, tm_render_graph_execute_o *graph_execute)
+{
+    cloud_pass_runtime_data_t *rdata = (cloud_pass_runtime_data_t *)runtime_data;
+
+    tm_renderer_resource_command_buffer_o *res_buf = tm_render_graph_execute_api->default_resource_command_buffer(graph_execute);
+
+    tm_renderer_draw_call_info_t draw_call = {
+        .primitive_type = TM_RENDERER_PRIMITIVE_TYPE_TRIANGLE_LIST,
+        .draw_type = TM_RENDERER_DRAW_TYPE_NON_INDEXED,
+        .non_indexed.first_vertex = 0,
+        .non_indexed.num_vertices = 3,
+        .num_instances = 1,
+    };
+
+    tm_renderer_shader_info_t shader_info;
+    if (tm_shader_api->assemble_shader_infos(rdata->shader, 0, 0, tm_render_graph_execute_api->shader_context(graph_execute), res_buf, &rdata->cbuffer, &rdata->rbinder, 1, &shader_info)) {
+        tm_renderer_command_buffer_o *cmd_buf = tm_render_graph_execute_api->default_command_buffer(graph_execute);
+        tm_renderer_api->tm_renderer_command_buffer_api->draw_calls(cmd_buf, &sort_key, &draw_call, &shader_info, 1);
+    }
+}
+
 #define TM_VOLUMETRIC_CLOUDS_HISTORY TM_STATIC_HASH("volumetric_clouds_history", 0xb68721c809712c0bULL)
 
 static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_manager_o *manager)
 {
     tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
 
-    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
-        .color_targets = {
-            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD },
+    tm_render_graph_pass_i pass = {
+        .api = {
+            .setup_pass = cloud_pass_setup,
+            .execute_pass = cloud_pass_execute 
         },
-        .depth_stencil_target = {
-            .name = TM_DEFAULT_RENDER_PIPE_MAIN_DEPTH_STENCIL_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD
-        },
-        .input_slots = {
-            { .slot_name = TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), .resources = { { TM_VOLUMETRIC_CLOUDS_HISTORY } } },
-        },
-        .shader = TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL),
-    }, "Volumetric Clouds");
-
-    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
-        .color_targets = {
-            { .name = TM_VOLUMETRIC_CLOUDS_HISTORY, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD } },
-        .shader = TM_STATIC_HASH("copy", 0xd996b7bdf040ea8bULL),
-        .output_pass = true,
-        .input_slots = { { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION } } } }
-    }, "Volumetric Clouds Copy");
+        .profiling_scope = "Volumetric Clouds",
+        .const_data = &manager, 
+        .const_data_size = sizeof(tm_component_manager_o *),
+        .runtime_data_size = sizeof(cloud_pass_runtime_data_t)     
+    };    
+    tm_render_graph_module_api->add_pass(mod, &pass);
 
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
         .submenu_name = "Cloud Module",
@@ -174,46 +226,33 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
     struct tm_renderer_resource_command_buffer_o *res_buf, const tm_transform_t *transforms, const uint32_t *transform_indices,
     void **component_data, uint32_t num_components, const uint8_t *frustum_visibility)
 {
-    TM_INIT_TEMP_ALLOCATOR(ta);
-
-    tm_shader_o *shader = tm_shader_repository_api->lookup_shader(manager->repo, TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL));
-
-    if (!shader)
-        return;
-
-    tm_shader_io_o *io = tm_shader_api->shader_io(shader);
-    /* carray */ tm_shader_constant_buffer_instance_t *cbuffer = 0;
-    /* carray */ tm_shader_resource_binder_instance_t *rbinder = 0;
-    tm_carray_temp_resize(cbuffer, num_components, ta);
-    tm_carray_temp_resize(rbinder, num_components, ta);
-    tm_shader_api->create_constant_buffer_instances(io, num_components, cbuffer);
-    tm_shader_api->create_resource_binder_instances(io, num_components, rbinder);
-
     tm_cloud_component_t **cdata = (tm_cloud_component_t **)component_data;
+    manager->active_cloud_component = num_components > 0 ? cdata[0] : 0;
 
     for (uint32_t i = 0; i < num_components; ++i) {
         tm_cloud_component_t *c = cdata[i];
+        if (!c->shader)
+            continue;
+
+        tm_shader_io_o *io = tm_shader_api->shader_io(c->shader);
 
         uint32_t num_steps = (c->quality + 1) << 3;
-        set_constant(io, res_buf, &cbuffer[i], TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
 
-        uint64_t wanted_version = tm_creation_graph_api->graph_version(c->textures.asset);
-        if (wanted_version != c->textures.version) {
-            tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->textures.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
-            c->textures.version = image_output.version;
+        if (c->textures.asset) {
+            uint64_t wanted_version = tm_creation_graph_api->graph_version(c->textures.asset);
+            if (wanted_version != c->textures.version) {
+                tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->textures.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
+                c->textures.version = image_output.version;
 
-            tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
-            TM_LOG("Loaded %i creation graph resources.\n", image_output.num_output_objects);  
-            if (set_resource(io, res_buf, &rbinder[i], TM_STATIC_HASH("test", 0x2f4a8724618f4c63ULL), &image->handle, 0, 0, 1)) {
-                // 
+                tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
+                TM_LOG("Loaded %i creation graph resources.\n", image_output.num_output_objects);
+                if (set_resource(io, res_buf, &c->rbinder, TM_STATIC_HASH("test", 0x2f4a8724618f4c63ULL), &image->handle, 0, 0, 1)) {
+                    // 
+                }
             }
         }
     }
-
-    tm_shader_api->destroy_constant_buffer_instances(io, cbuffer, num_components);
-    tm_shader_api->destroy_resource_binder_instances(io, rbinder, num_components);
-
-    TM_SHUTDOWN_TEMP_ALLOCATOR(ta);
 }
 
 void create_truth_types(struct tm_the_truth_o *tt)
@@ -234,9 +273,8 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_property_aspect(tt, object_type, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES, TM_TT_PROP_ASPECT__PROPERTIES__ASSET_PICKER, TM_TT_TYPE__CREATION_GRAPH);
 }
 
-void load_asset(tm_component_manager_o *manager, tm_entity_t e, void *data, const struct tm_the_truth_o *tt, uint64_t asset)
+void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_cloud_component_t *c, const struct tm_the_truth_o *tt, uint64_t asset)
 {
-    tm_cloud_component_t *c = data;
     const tm_the_truth_object_o *object = tm_the_truth_api->read(tt, asset);
 
     c->quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
@@ -244,15 +282,36 @@ void load_asset(tm_component_manager_o *manager, tm_entity_t e, void *data, cons
     c->precipitation = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION);
 
     uint64_t ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES);
-    if (ref && ref != c->textures.asset) {
+    if (ref != c->textures.asset) {
         c->textures.asset = ref;
         c->textures.version = 0;
+    }
+}
+
+static void component_added(tm_component_manager_o *manager, tm_entity_t e, tm_cloud_component_t *c)
+{
+    c->shader = tm_shader_repository_api->lookup_shader(manager->repo, TM_STATIC_HASH("volumetric_clouds", 0xb43cfa7da8d56490ULL));
+    if (c->shader) {
+        tm_shader_io_o *io = tm_shader_api->shader_io(c->shader);
+        tm_shader_api->create_constant_buffer_instances(io, 1, &c->cbuffer);
+        tm_shader_api->create_resource_binder_instances(io, 1, &c->rbinder);
+    }
+}
+
+static void component_removed(tm_component_manager_o *manager, tm_entity_t e, tm_cloud_component_t *c)
+{
+    if (c->shader) {
+        tm_shader_io_o *io = tm_shader_api->shader_io(c->shader);
+        tm_shader_api->destroy_constant_buffer_instances(io, &c->cbuffer, 1);
+        tm_shader_api->destroy_resource_binder_instances(io, &c->rbinder, 1);
     }
 }
 
 void destroy_component(struct tm_component_manager_o *manager)
 {
     tm_renderer_backend_i *backend = manager->rb;
+
+    tm_entity_api->call_remove_on_all_entities(manager->ctx, tm_entity_api->lookup_component(manager->ctx, TM_TT_TYPE_HASH__CLOUD_COMPONENT));
 
     tm_renderer_resource_command_buffer_o *res_buf;
     backend->create_resource_command_buffers(backend->inst, &res_buf, 1);
@@ -290,9 +349,6 @@ void create_component(struct tm_entity_context_o *ctx)
         .repo = repo,
     };
 
-    // 
-    tm_creation_graph_api->create_truth_types(manager->tt);
-
     // create cloud module
     manager->module = create_volumetric_cloud_module(manager);
 
@@ -300,7 +356,9 @@ void create_component(struct tm_entity_context_o *ctx)
         .name = TM_TT_TYPE__CLOUD_COMPONENT,
         .bytes = sizeof(tm_cloud_component_t),
         .manager = (tm_component_manager_o *)manager,
-        .load_asset = load_asset,
+        .load_asset = component_load_asset,
+        .add = component_added,
+        .remove = component_removed,
         .destroy = destroy_component,
     };
 
@@ -325,6 +383,8 @@ void load_cloud_component(struct tm_api_registry_api *reg, bool load)
     tm_shader_system_api = reg->get(TM_SHADER_SYSTEM_API_NAME);
     tm_shader_repository_api = reg->get(TM_SHADER_REPOSITORY_API_NAME);
     tm_buffer_format_api = reg->get(TM_BUFFER_FORMAT_API_NAME);
+    tm_render_graph_setup_api = reg->get(TM_RENDER_GRAPH_SETUP_API_NAME);
+    tm_render_graph_execute_api = reg->get(TM_RENDER_GRAPH_EXECUTE_API_NAME);
 
     tm_add_or_remove_implementation(reg, load, TM_THE_TRUTH_CREATE_TYPES_INTERFACE_NAME, create_truth_types);
     tm_add_or_remove_implementation(reg, load, TM_ENTITY_CREATE_COMPONENT_INTERFACE_NAME, create_component);
