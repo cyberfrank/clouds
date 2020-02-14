@@ -66,6 +66,7 @@ typedef struct tm_cloud_component_t {
     uint32_t quality;
 
     float coverage;
+    float cloud_type;
     float precipitation;
     float wind_direction;
     float wind_speed;
@@ -194,8 +195,8 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
         .profiling_scope = "Volumetric Clouds",
         .const_data = &manager, 
         .const_data_size = sizeof(tm_component_manager_o *),
-        .runtime_data_size = sizeof(cloud_pass_runtime_data_t)     
-    };    
+        .runtime_data_size = sizeof(cloud_pass_runtime_data_t)  
+    };
     tm_render_graph_module_api->add_pass(mod, &pass);
 
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
@@ -261,6 +262,7 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("precipitation", 0x30d73ebc265650e0ULL), &c->precipitation, sizeof(float));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("cloud_type", 0x3beb28659423dab6ULL), &c->cloud_type, sizeof(float));
 
         tm_vec2_t wind_vector;
         float wind_speed = c->wind_speed * 0.1f;
@@ -277,8 +279,6 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
                 c->weather_map.version = image_output.version;
 
                 tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
-
-                TM_LOG("Loaded weather map successfully.\n");
                 set_resource(io, res_buf, &c->rbinder, TM_STATIC_HASH("weather_map", 0x95323a8725dcd458ULL), &image->handle, 0, 0, 1);
             }
         }
@@ -292,7 +292,6 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
                 tm_creation_graph_image_data_t *images = (tm_creation_graph_image_data_t *)image_output.output;
                 if (image_output.num_output_objects == 2)
                 {
-                    TM_LOG("Loaded %i cloud textures successfully.\n", image_output.num_output_objects);
                     set_resource(io, res_buf, &c->rbinder, TM_STATIC_HASH("cloud_shape", 0xecbca377104137c2ULL), &images[0].handle, 0, 0, 1);
                     set_resource(io, res_buf, &c->rbinder, TM_STATIC_HASH("cloud_detail", 0x7955716250d5b1bcULL), &images[1].handle, 0, 0, 1);
                 }
@@ -307,6 +306,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
         { "quality", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "coverage", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "precipitation", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
+        { "cloud_type", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "textures", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
         { "weather_map", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
         { "wind_direction", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
@@ -325,8 +325,9 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__PLANET_RADIUS, 6371000);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_START, 1500);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS, 2000);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, 0.0f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, 1.0f);
-    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, 0.9f);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, 0.5f);
     
     tm_the_truth_api->commit(tt, component_w, TM_TT_NO_UNDO_SCOPE);
     tm_the_truth_api->set_default_object(tt, object_type, component);
@@ -346,6 +347,7 @@ void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_clo
 
     c->quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
     c->coverage = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE);
+    c->cloud_type = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE);
     c->precipitation = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION);
     c->wind_direction = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_DIRECTION);
     c->wind_speed = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_SPEED);
@@ -494,6 +496,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
         item_rect.y = tm_properties_view_api->ui_reference(args, item_rect, "Weather Map", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WEATHER_MAP);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Coverage", 0, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Precipitation", 0, object, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, &slider01);
+        item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Cloud Type", 0, object, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Wind Direction", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_DIRECTION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Wind Speed", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_SPEED, &slider01);
     }
