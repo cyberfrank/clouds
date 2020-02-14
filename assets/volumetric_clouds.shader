@@ -183,7 +183,7 @@ pixel_shader : {
         float3 inner = ray_sphere_intersect(R + load_atmosphere_start(), offset, v);
         float3 outer = ray_sphere_intersect(R + load_atmosphere_start() + load_atmosphere_thickness(), offset, v);
 
-        uint steps = 1000;
+        uint steps = load_num_steps();
         float step_size = distance(inner, outer) / steps;
         float t = step_size * 1.0;
 
