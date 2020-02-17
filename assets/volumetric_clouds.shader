@@ -1,8 +1,3 @@
-depth_stencil_states : {
-    depth_test_enable : true
-    depth_write_enable : false
-    depth_compare_op : "less_equal"
-}
 
 raster_states : {
     polygon_mode: "fill"
@@ -33,7 +28,8 @@ imports : [
     { name: "atmosphere_thickness" type: "uint" }
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
-    { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" }   
+    { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" } 
+    { name: "history" type: "texture_2d" }
 ]
 
 common : [[ 
@@ -94,7 +90,8 @@ common : [[
 
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
         base_cloud *= density_gradient(rh, load_cloud_type());
-        
+        // base_cloud *= height_signal(rh, load_cloud_type(), 0.0);
+
         float density = remap(base_cloud, weather.r * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
 
         if (density > 0)
@@ -131,6 +128,29 @@ common : [[
         p3 += dot(p3, p3.yzx + 19.19);
         return frac((p3.x + p3.y) * p3.z);
     }
+
+    // van de corput sequence
+    float corput(int n, int base) {
+        float q = 0;
+        float bk = 1.0 / base;
+        
+        while (n > 0) {
+            q += (n % base) * bk;
+            n /= base;
+            bk /= base;
+        }
+        
+        return q;
+    }
+
+    float3 compute_clip_space(in float2 position) {
+        float2 nds = 2.0 * position / load_render_target_resolution() - 1.0;
+        return float3(nds, 1.0);
+    }
+
+    float2 compute_screen_pos(in float2 ndc) {
+        return ndc * 0.5 + 0.5;
+    }
 ]]
 
 vertex_shader : {
@@ -147,13 +167,10 @@ vertex_shader : {
             { -1, -3,  1, 1 },
         };
 
-        bool taa_enabled = load_settings_mask() & SETTINGS_TAA_ENABLED;
-        output.position = taa_enabled ? add_taa_offset(pos[input.vertex_id], load_frame_number(), load_render_target_resolution()) : pos[input.vertex_id];
+        output.position = pos[input.vertex_id];
 
         float4x4 inverse_view = load_camera_inverse_view();
-        
         float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
-        cp = taa_enabled ? remove_taa_offset(cp, load_frame_number(), load_render_target_resolution()) : cp;
         float4 p = mul(cp, load_camera_inverse_projection());
         output.camera_ray = mul(p.xyz, (float3x3)inverse_view);        
         return output;
@@ -182,7 +199,7 @@ pixel_shader : {
 
         uint steps = load_num_steps();
         float step_size = distance(inner, outer) / steps;
-        float t = step_size * hash13(v * load_frame_number());
+        float t = step_size * corput(load_frame_number() * step_size, 2);
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         
@@ -209,7 +226,7 @@ pixel_shader : {
                 dist = min(dist, t);
 
                 float sigma_sca = 0.125 * density;              // scattering coefficient
-                float sigma_ext = (sigma_sca + 0.05) * density; // scattering extinction
+                float sigma_ext = (sigma_sca + 0.066) * density; // scattering extinction
 
                 float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
 
@@ -222,7 +239,7 @@ pixel_shader : {
             }
             
             // opt out early for low transmittance
-            if (transmittance < 0.05) break;
+            if (transmittance < 0.01) break;
 
             t += step_size;
         }
@@ -231,7 +248,20 @@ pixel_shader : {
         float3 background_color = get_sky_color_physical(v);
         scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), fog_amount);
 
-        output.color = float4(scattered_light + background_color * transmittance, transmittance);
+        float3 clip_space_pos = compute_clip_space(input.position.xy);
+        float4 camera_to_world = mul(float4(clip_space_pos, 1), load_camera_inverse_view_projection());
+        camera_to_world /= camera_to_world.w;
+
+        // last frame sample position (p')
+        float4 p = mul(camera_to_world, load_camera_last_view_projection());
+        p /= p.w;
+
+        float2 screen_pos = compute_screen_pos(p.xy);
+        bool outside = any(abs(screen_pos - 0.5) > 0.5);
+
+        float4 color = float4(scattered_light + background_color * transmittance, transmittance);
+
+        output.color = color;
         return output;
     ]]
 }

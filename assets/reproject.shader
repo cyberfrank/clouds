@@ -1,6 +1,7 @@
 depth_stencil_states : {
-    depth_test_enable : false
+    depth_test_enable : true
     depth_write_enable : false
+    depth_compare_op : "less_equal"
 }
 
 raster_states : {
@@ -8,31 +9,21 @@ raster_states : {
 }
 
 samplers : {
-    clamp_linear : {
+    linear : {
         anisotropy_enable: true
         min_filter: "linear"
         max_filter: "linear"
         mip_mode: "linear"
-        address_u: "clamp"
-        address_v: "clamp"
-        address_w: "clamp"
     }
 }
 
 imports : [
     { name: "textures" type: "texture_2d" elements: 2 }
-    { name: "sampler_clamp_linear" type: "sampler" sampler: "clamp_linear" }   
+    { name: "sampler_linear" type: "sampler" }
 ]
 
 common : [[
-    float3 compute_clip_space(in float2 position) {
-        float2 nds = 2.0 * position / load_render_target_resolution() - 1.0;
-        return float3(nds, 1.0);
-    }
-
-    float2 compute_screen_pos(in float2 ndc) {
-        return ndc * 0.5 + 0.5;
-    }
+    //
 ]]
 
 vertex_shader : {
@@ -67,23 +58,13 @@ pixel_shader : {
         { name : "color" type: "float4" }
     ]
 
-    code : [[       
-        float3 clip_space_pos = compute_clip_space(input.position.xy);
-        float4 camera_to_world = mul(float4(clip_space_pos, 1), load_camera_inverse_view_projection());
-        camera_to_world /= camera_to_world.w;
+    code : [[
+        // use linear filtering for upscaling
+        float4 clouds = get_textures(0).Sample(get_sampler_linear(), input.uv);
+        // hdr accumulation target
+        float4 hdr = get_textures(1).Load(int3(input.position.xy, 0));
 
-        // last frame sample position (p')
-        float4 p = mul(camera_to_world, load_camera_last_view_projection());
-        p /= p.w;
-
-        float2 screen_pos = compute_screen_pos(p.xy);
-        bool outside = any(abs(screen_pos - 0.5) > 0.5);
-        
-        SamplerState sampler = get_sampler_clamp_linear();
-        float4 current = get_textures(0).Sample(sampler, input.uv);
-        float4 history = get_textures(1).Sample(sampler, screen_pos);
-
-        output.color = outside ? current : lerp(current, history, 0.05);
+        output.color = float4(clouds.rgb + hdr.rgb * clouds.a, 1.0);
         return output;
     ]]
 }
