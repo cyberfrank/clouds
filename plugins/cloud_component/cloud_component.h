@@ -21,11 +21,11 @@ enum {
 };
 
 enum {
-    TM_CLOUD_QUALITY_LOW,
-    TM_CLOUD_QUALITY_MEDIUM,
-    TM_CLOUD_QUALITY_HIGH,
-    TM_CLOUD_QUALITY_ULTRA,
-    TM_CLOUD_QUALITY_DEVELOPER,
+    TM_CLOUD_QUALITY_LOW, // 8 steps
+    TM_CLOUD_QUALITY_MEDIUM, // 16 steps
+    TM_CLOUD_QUALITY_HIGH, // 24 steps
+    TM_CLOUD_QUALITY_ULTRA, // 32 steps
+    TM_CLOUD_QUALITY_GROUND_TRUTH, // 256 steps
 };
 
 TM_DLL_EXPORT void load_cloud_component(struct tm_api_registry_api *reg, bool load);

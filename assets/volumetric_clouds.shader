@@ -126,13 +126,10 @@ common : [[
         return exp2(-shadow * step_size);
     }
 
-    float3 compute_clip_space(float2 position) {
-        float2 nds = 2.0 * position / load_render_target_resolution() - 1.0;
-        return float3(nds, 1.0); 
-    }
-
-    float2 compute_screen_pos(float2 ndc) {
-        return ndc * 0.5 + 0.5;
+    float hash13(float3 p3) {
+        p3 = frac(p3 * 1031.1031);
+        p3 += dot(p3, p3.yzx + 19.19);
+        return frac((p3.x + p3.y) * p3.z);
     }
 ]]
 
@@ -173,7 +170,7 @@ pixel_shader : {
 
         if (v.y < 0)
         {
-            output.color = float4(0.02, 0.02, 0.02, 1);
+            output.color = float4(0, 0, 0, 1);
             return output;
         }
 
@@ -185,8 +182,7 @@ pixel_shader : {
 
         uint steps = load_num_steps();
         float step_size = distance(inner, outer) / steps;
-        float t = step_size * 1.0;
-
+        float t = step_size * hash13(v * load_frame_number());
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         
@@ -194,7 +190,6 @@ pixel_shader : {
         float cos_theta = dot(v, sun_dir);
         // dual lobe phase function
         float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
-
 
         float3 sun_color = get_sky_color_physical(sun_dir);
         float3 sky_light = get_sky_color_physical(float3(0, -1, 0)) * load_precipitation();
@@ -227,7 +222,7 @@ pixel_shader : {
             }
             
             // opt out early for low transmittance
-            if (transmittance < 0.1) break;
+            if (transmittance < 0.05) break;
 
             t += step_size;
         }
@@ -236,9 +231,7 @@ pixel_shader : {
         float3 background_color = get_sky_color_physical(v);
         scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), fog_amount);
 
-        float3 color = scattered_light + background_color * transmittance;
-
-        output.color = float4(color, 1);
+        output.color = float4(scattered_light + background_color * transmittance, transmittance);
         return output;
     ]]
 }

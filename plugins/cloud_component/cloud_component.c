@@ -105,8 +105,10 @@ typedef struct tm_component_manager_o
 
     struct
     {
+        bool half_resolution;
         bool visualize_weather;
-    } debug_settings;
+        bool temporal_reprojection;
+    } settings;
 
 } tm_component_manager_o;
 
@@ -115,7 +117,8 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
     tm_component_manager_o *manager = (tm_component_manager_o *)inst;
 
     const tm_ui_menu_item_t items[] = {
-        { .text = "Visualize Weather Texture", .toggle = &manager->debug_settings.visualize_weather },
+        { .text = "Half Resolution", .toggle = &manager->settings.half_resolution },
+        { .text = "Show Weather Texture", .toggle = &manager->settings.visualize_weather },
     };
 
     const tm_ui_menu_t menu = {
@@ -127,6 +130,9 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
     tm_ui_menu_result_t res = tm_ui_api->menu(ui, uistyle, &menu);
     (void)res;
 }
+
+#define TM_VOLUMETRIC_CLOUDS_TARGET TM_STATIC_HASH("volumetric_clouds_target", 0xcb5166cb57718153ULL)
+#define TM_VOLUMETRIC_CLOUDS_HISTORY TM_STATIC_HASH("volumetric_clouds_copy", 0x1f3d3166df9e7926ULL)
 
 typedef struct cloud_pass_runtime_data_t
 {
@@ -145,9 +151,18 @@ static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_rend
     if (!active)
         return;
 
+    float scale = manager->settings.half_resolution ? 0.5f : 1.0f;
+
     tm_pass_render_target_t color_targets[TM_MAX_RENDER_TARGETS] = {
-        { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD, .store_op = TM_RENDERER_RESOURCE_STORE_OP_STORE }
+        { 
+            .name = TM_VOLUMETRIC_CLOUDS_TARGET, 
+            .create = true, 
+            .inherits = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, 
+            .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD,
+            .scale = { scale, scale, 1.0f },
+        }
     };
+
     tm_pass_render_target_t depth_stencil_target = {
         .name = TM_DEFAULT_RENDER_PIPE_MAIN_DEPTH_STENCIL_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD
     };
@@ -199,6 +214,27 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
     };
     tm_render_graph_module_api->add_pass(mod, &pass);
 
+    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
+        .color_targets = {
+            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD }
+        },
+        .shader = TM_STATIC_HASH("reproject", 0xafe2313fa2c033b7ULL),
+        .input_slots = {
+            { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_VOLUMETRIC_CLOUDS_TARGET }, { TM_VOLUMETRIC_CLOUDS_HISTORY } } }
+        }
+    }, "Reproject");
+
+    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
+        .color_targets = {
+            { .name = TM_VOLUMETRIC_CLOUDS_HISTORY, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD }
+        },
+        .shader = TM_STATIC_HASH("copy", 0xd996b7bdf040ea8bULL),
+        .input_slots = {
+            { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_VOLUMETRIC_CLOUDS_TARGET } } }
+        },
+        .output_pass = true
+    }, "Copy");
+
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
         .submenu_name = "Cloud Module",
         .inst = manager,
@@ -210,6 +246,7 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
 static void graph_module_inject(struct tm_component_manager_o *manager, struct tm_render_graph_module_o *module)
 {
+    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_VOLUMETRIC_CLOUDS_HISTORY, 0, TM_VOLUMETRIC_CLOUDS_TARGET);
     tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
 }
 
@@ -256,8 +293,8 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_thickness", 0xfa5152e92fe4bd5eULL), &c->atmosphere_thickness, sizeof(uint32_t));
         
         uint32_t num_steps = (c->quality + 1) << 3;
-        if (c->quality == TM_CLOUD_QUALITY_DEVELOPER)
-            num_steps = 100;
+        if (c->quality == TM_CLOUD_QUALITY_GROUND_TRUTH)
+            num_steps = 256;
 
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
@@ -321,7 +358,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
     const uint64_t component = tm_the_truth_api->create_object_of_type(tt, tm_the_truth_api->object_type_from_name_hash(tt, TM_TT_TYPE_HASH__CLOUD_COMPONENT), TM_TT_NO_UNDO_SCOPE);
     tm_the_truth_object_o *component_w = tm_the_truth_api->write(tt, component);
 
-    tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, TM_CLOUD_QUALITY_DEVELOPER);
+    tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, TM_CLOUD_QUALITY_HIGH);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__PLANET_RADIUS, 6371000);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_START, 1500);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS, 2000);
@@ -484,7 +521,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
         "Medium",
         "High",
         "Ultra",
-        "Developer",
+        "Ground Truth",
     };
 
     item_rect.y = tm_properties_view_api->ui_uint32_dropdown(args, item_rect, "Quality", 0, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, options, 0, TM_ARRAY_COUNT(options));
