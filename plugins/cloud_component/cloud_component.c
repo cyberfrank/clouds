@@ -138,7 +138,6 @@ typedef struct cloud_pass_runtime_data_t
     tm_shader_o *shader;
     tm_shader_constant_buffer_instance_t cbuffer;
     tm_shader_resource_binder_instance_t rbinder;
-    uint32_t rt_copy;
 } cloud_pass_runtime_data_t;
 
 static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_render_graph_setup_o *graph_setup)
@@ -173,7 +172,6 @@ static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_rend
         .shader = c->shader,
         .cbuffer = c->cbuffer,
         .rbinder = c->rbinder,
-        .rt_copy = handle.value,
     };
 }
 
@@ -191,19 +189,21 @@ static void cloud_pass_execute(const void *const_data, void *runtime_data, uint6
         .num_instances = 1,
     };
 
-    // tm_shader_io_o *io = tm_shader_api->shader_io(rdata->shader);
+    tm_shader_io_o *io = tm_shader_api->shader_io(rdata->shader);
 
-    // tm_shader_resource_t resource;
-    // uint32_t slot;
-    // tm_shader_api->lookup_resource(io, TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), &resource, &slot);
-    // tm_shader_api->update_resources(tm_shader_api->shader_io(rdata->shader), res_buf, &(tm_shader_resource_update_t){ 
-    //     .instance_id = rdata->rbinder.instance_id, 
-    //     .resource_slot = slot, 
-    //     .first_resource = 0, 
-    //     .num_resources = 1, 
-    //     .resources = &rdata->rt_copy,
-    //     .resources_view_aspect_flags = 0 
-    // }, 1);
+    tm_shader_resource_t resource;
+    uint32_t slot;
+    if (tm_shader_api->lookup_resource(io, TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), &resource, &slot)) {
+        //
+        // tm_shader_api->update_resources(tm_shader_api->shader_io(rdata->shader), res_buf, &(tm_shader_resource_update_t){ 
+        //     .instance_id = rdata->rbinder.instance_id, 
+        //     .resource_slot = slot, 
+        //     .first_resource = 0, 
+        //     .num_resources = 1, 
+        //     .resources = 0,
+        //     .resources_view_aspect_flags = 0 
+        // }, 1);
+    }
 
     tm_renderer_shader_info_t shader_info;
     if (tm_shader_api->assemble_shader_infos(rdata->shader, 0, 0, tm_render_graph_execute_api->shader_context(graph_execute), res_buf, &rdata->cbuffer, &rdata->rbinder, 1, &shader_info)) {
