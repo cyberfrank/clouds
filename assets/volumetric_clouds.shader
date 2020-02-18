@@ -55,9 +55,9 @@ common : [[
 
     float height_signal(in float rh, in float cloud_type)
     {
-        const float4 g0 = float4(0.02, 0.05, 0.09, 0.11);  // stratus
+        const float4 g0 = float4(0.0, 0.1, 0.2, 0.3);  // stratus
         const float4 g1 = float4(0.02, 0.2, 0.48, 0.625);  // stratocumulus
-        const float4 g2 = float4(0.01, 0.0625, 0.78, 1.0); // cumulus
+        const float4 g2 = float4(0.0, 0.1625, 0.88, 0.98); // cumulus
         
         float a = 1.0 - saturate(cloud_type * 2.0);
         float b = 1.0 - abs(cloud_type - 0.5) * 2.0;
@@ -93,13 +93,14 @@ common : [[
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
         base_cloud *= height_signal(rh, load_cloud_type());
 
-        float density = remap(base_cloud, weather.r * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
+        float coverage = weather.r * (1.0 - load_coverage());
+        float density = remap(base_cloud, coverage, 1.0, 0.0, 1.0);
 
         if (density > 0)
         {
-            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 20.0).r;
+            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 16.0).r;
             erosion = lerp(erosion, 1.0 - erosion, saturate(rh * 10.0));
-            density = remap(density, erosion * 0.5, 1.0, 0.0, 1.0);
+            density = remap(density, erosion * 0.4, 1.0, 0.0, 1.0);
         }
         
         // reduce density at the bottom
