@@ -26,6 +26,9 @@ imports : [
     { name: "planet_radius" type: "uint" }
     { name: "atmosphere_start" type: "uint" }
     { name: "atmosphere_thickness" type: "uint" }
+    { name: "scattering" type: "float" }
+    { name: "absorption" type: "float" }
+    { name: "draw_distance" type: "float"}
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
     { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" } 
@@ -50,14 +53,7 @@ common : [[
         return saturate(y / load_atmosphere_thickness());
     }
 
-    float height_signal(in float altitude, in float height, in float altitude_start)
-    {
-        float one_over_height = 1 / height;
-        float altitude_diff = altitude - altitude_start;
-        return altitude_diff * (altitude_diff - height) * one_over_height * one_over_height * -4;
-    }
-
-    float density_gradient(in float rh, in float cloud_type)
+    float height_signal(in float rh, in float cloud_type)
     {
         const float4 g0 = float4(0.02, 0.05, 0.09, 0.11);  // stratus
         const float4 g1 = float4(0.02, 0.2, 0.48, 0.625);  // stratocumulus
@@ -70,6 +66,12 @@ common : [[
         float4 gradient = g0 * a + g1 * b + g2 * c;
 
         return smoothstep(gradient.x, gradient.y, rh) - smoothstep(gradient.z, gradient.w, rh);
+    }
+
+    float hash13(float3 p3) {
+        p3 = frac(p3 * 1031.1031);
+        p3 += dot(p3, p3.yzx + 19.19);
+        return frac((p3.x + p3.y) * p3.z);
     }
 
     float capture_sample(float3 pos, in float rh) 
@@ -89,16 +91,15 @@ common : [[
         float3 weather = get_weather_map().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
 
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
-        base_cloud *= density_gradient(rh, load_cloud_type());
-        // base_cloud *= height_signal(rh, load_cloud_type(), 0.0);
+        base_cloud *= height_signal(rh, load_cloud_type());
 
         float density = remap(base_cloud, weather.r * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
 
         if (density > 0)
         {
-            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 16.0).r;
+            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 20.0).r;
             erosion = lerp(erosion, 1.0 - erosion, saturate(rh * 10.0));
-            density = remap(density, erosion * 0.4, 1.0, 0.0, 1.0);
+            density = remap(density, erosion * 0.5, 1.0, 0.0, 1.0);
         }
         
         // reduce density at the bottom
@@ -120,13 +121,8 @@ common : [[
             float density = capture_sample(position, rh);
             shadow += density;
         }
-        return exp2(-shadow * step_size);
-    }
 
-    float hash13(float3 p3) {
-        p3 = frac(p3 * 1031.1031);
-        p3 += dot(p3, p3.yzx + 19.19);
-        return frac((p3.x + p3.y) * p3.z);
+        return exp2(-shadow * step_size);
     }
 
     // van de corput sequence
@@ -166,7 +162,6 @@ vertex_shader : {
             {  3,  1,  1, 1 },
             { -1, -3,  1, 1 },
         };
-
         output.position = pos[input.vertex_id];
 
         float4x4 inverse_view = load_camera_inverse_view();
@@ -198,8 +193,9 @@ pixel_shader : {
         float3 outer = ray_sphere_intersect(R + load_atmosphere_start() + load_atmosphere_thickness(), offset, v);
 
         uint steps = load_num_steps();
-        float step_size = distance(inner, outer) / steps;
-        float t = step_size * corput(load_frame_number() * step_size, 2);
+        float draw_distance = min(distance(inner, outer), load_draw_distance());
+        float step_size = draw_distance / steps;
+        float t = step_size * halton_sequence_2d(load_frame_number() * length(v)).x;
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         
@@ -225,10 +221,11 @@ pixel_shader : {
             {
                 dist = min(dist, t);
 
-                float sigma_sca = 0.125 * density;              // scattering coefficient
-                float sigma_ext = (sigma_sca + 0.066) * density; // scattering extinction
+                float sigma_sca = load_scattering() * density;              // scattering coefficient
+                float sigma_ext = (sigma_sca + load_absorption()) * density; // scattering extinction
 
                 float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
+                // ambient = saturate(2.0 * ambient + 0.5);
 
                 float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
                 float Tr = exp(-sigma_ext * step_size);
@@ -244,10 +241,6 @@ pixel_shader : {
             t += step_size;
         }
 
-        float fog_amount = 1.0 - exp(-dist * 0.0001);
-        float3 background_color = get_sky_color_physical(v);
-        scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), fog_amount);
-
         float3 clip_space_pos = compute_clip_space(input.position.xy);
         float4 camera_to_world = mul(float4(clip_space_pos, 1), load_camera_inverse_view_projection());
         camera_to_world /= camera_to_world.w;
@@ -259,9 +252,16 @@ pixel_shader : {
         float2 screen_pos = compute_screen_pos(p.xy);
         bool outside = any(abs(screen_pos - 0.5) > 0.5);
 
+        float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
+
+
+        float3 background_color = get_sky_color_physical(v);
+        float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
+        scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), fog_amount);
+
         float4 color = float4(scattered_light + background_color * transmittance, transmittance);
 
-        output.color = color;
+        output.color = outside ? color : lerp(color, last_frame, 0.05);
         return output;
     ]]
 }

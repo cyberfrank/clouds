@@ -70,6 +70,9 @@ typedef struct tm_cloud_component_t {
     float precipitation;
     float wind_direction;
     float wind_speed;
+    float scattering;
+    float absorption;
+    float draw_distance;
 
     // planet settings
     uint32_t planet_radius;
@@ -138,6 +141,7 @@ typedef struct cloud_pass_runtime_data_t
     tm_shader_o *shader;
     tm_shader_constant_buffer_instance_t cbuffer;
     tm_shader_resource_binder_instance_t rbinder;
+    tm_render_graph_handle_t history_target;
 } cloud_pass_runtime_data_t;
 
 static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_render_graph_setup_o *graph_setup)
@@ -172,6 +176,7 @@ static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_rend
         .shader = c->shader,
         .cbuffer = c->cbuffer,
         .rbinder = c->rbinder,
+        .history_target = handle,
     };
 }
 
@@ -194,15 +199,17 @@ static void cloud_pass_execute(const void *const_data, void *runtime_data, uint6
     tm_shader_resource_t resource;
     uint32_t slot;
     if (tm_shader_api->lookup_resource(io, TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), &resource, &slot)) {
-        //
-        // tm_shader_api->update_resources(tm_shader_api->shader_io(rdata->shader), res_buf, &(tm_shader_resource_update_t){ 
-        //     .instance_id = rdata->rbinder.instance_id, 
-        //     .resource_slot = slot, 
-        //     .first_resource = 0, 
-        //     .num_resources = 1, 
-        //     .resources = 0,
-        //     .resources_view_aspect_flags = 0 
-        // }, 1);
+        
+        uint32_t resource = tm_render_graph_execute_api->backend_handle(graph_execute, rdata->history_target);
+
+        tm_shader_api->update_resources(tm_shader_api->shader_io(rdata->shader), res_buf, &(tm_shader_resource_update_t){ 
+            .instance_id = rdata->rbinder.instance_id, 
+            .resource_slot = slot, 
+            .first_resource = 0, 
+            .num_resources = 1, 
+            .resources = &resource,
+            .resources_view_aspect_flags = 0 
+        }, 1);
     }
 
     tm_renderer_shader_info_t shader_info;
@@ -308,6 +315,7 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("planet_radius", 0x5849f79517d87c7ULL), &c->planet_radius, sizeof(uint32_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_start", 0xb5f14bebd2751c08ULL), &c->atmosphere_start, sizeof(uint32_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_thickness", 0xfa5152e92fe4bd5eULL), &c->atmosphere_thickness, sizeof(uint32_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("draw_distance", 0x7b5664ab252ff2efULL), &c->draw_distance, sizeof(float));
         
         uint32_t num_steps = (c->quality + 1) << 3;
         if (c->quality == TM_CLOUD_QUALITY_GROUND_TRUTH)
@@ -324,7 +332,11 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         wind_vector.x = cosf(radians);
         wind_vector.y = sinf(radians);
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("wind_vector", 0x6874c809dadb28aaULL), &wind_vector, sizeof(tm_vec2_t));
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("wind_speed", 0xfd56ca9cad86b08fULL), &wind_speed, sizeof(float));    
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("wind_speed", 0xfd56ca9cad86b08fULL), &wind_speed, sizeof(float));
+
+        // set lighting coefficients
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("scattering", 0xdb01fc64550b55eaULL), &c->scattering, sizeof(float));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("absorption", 0xb6b15328196ed6e9ULL), &c->absorption, sizeof(float));
 
         if (c->weather_map.asset) {
             uint64_t wanted_version = tm_creation_graph_api->graph_version(c->weather_map.asset);
@@ -368,6 +380,9 @@ void create_truth_types(struct tm_the_truth_o *tt)
         { "planet_radius", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "atmosphere_start", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "atmosphere_thickness", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
+        { "scattering", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
+        { "absorption", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
+        { "draw_distance", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
     };
 
     const uint64_t object_type = tm_the_truth_api->create_object_type(tt, TM_TT_TYPE__CLOUD_COMPONENT, properties, TM_ARRAY_COUNT(properties));
@@ -382,6 +397,9 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, 0.0f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, 1.0f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, 0.5f);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, 0.125f);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, 0.055f);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE, 10000.0f);
     
     tm_the_truth_api->commit(tt, component_w, TM_TT_NO_UNDO_SCOPE);
     tm_the_truth_api->set_default_object(tt, object_type, component);
@@ -408,7 +426,10 @@ void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_clo
     c->planet_radius = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__PLANET_RADIUS);
     c->atmosphere_start = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_START);
     c->atmosphere_thickness = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS);
-
+    c->scattering = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
+    c->absorption = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
+    c->draw_distance = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE);
+    
     // set weather map
     ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__WEATHER_MAP);
     if (ref != c->weather_map.asset) {
@@ -554,6 +575,13 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Wind Direction", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_DIRECTION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Wind Speed", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_SPEED, &slider01);
     }
+    bool show_lighting = false;
+    item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Lighting", 0, object, indent, true, &show_lighting);
+    if (show_lighting) {
+        item_rect.x += TM_PROPERTIES_METRIC_INDENT;
+        item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Scattering", 0, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, 0);
+        item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Absorption", 0, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, 0);
+    }
     bool show_config = false;
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Configuration", 0, object, indent, false, &show_config);
     if (show_config) {
@@ -562,6 +590,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
         item_rect.y = tm_properties_view_api->ui_uint32(args, item_rect, "Planet Radius", 0, object, TM_TT_PROP__CLOUD_COMPONENT__PLANET_RADIUS, 0);
         item_rect.y = tm_properties_view_api->ui_uint32(args, item_rect, "Altitude", 0, object, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_START, 0);
         item_rect.y = tm_properties_view_api->ui_uint32(args, item_rect, "Thickness", 0, object, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS, 0);
+        item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Draw Distance", 0, object, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE, 0);
     }
     return item_rect.y;
 }
