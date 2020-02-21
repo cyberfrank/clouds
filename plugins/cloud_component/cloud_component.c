@@ -506,6 +506,9 @@ void create_component(struct tm_entity_context_o *ctx)
         .repo = repo,
     };
 
+    // half render target by default
+    manager->settings.half_resolution = true;
+
     // create cloud module
     manager->module = create_volumetric_cloud_module(manager);
 

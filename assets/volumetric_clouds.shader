@@ -114,7 +114,6 @@ common : [[
 
         float3 increment = sun_dir * step_size;
         float3 position = origin + increment * 0.5;
-        
         float shadow = 0.0;
 
         for (uint step = 0; step < steps; ++step, position += increment) {
@@ -123,21 +122,9 @@ common : [[
             shadow += density;
         }
 
-        return exp2(-shadow * step_size);
-    }
-
-    // van de corput sequence
-    float corput(int n, int base) {
-        float q = 0;
-        float bk = 1.0 / base;
-        
-        while (n > 0) {
-            q += (n % base) * bk;
-            n /= base;
-            bk /= base;
-        }
-        
-        return q;
+        // extinction coefficient should be added to ensure energy conservation
+        float ext = load_scattering() * shadow + load_absorption();
+        return exp2(-step_size * shadow * ext);
     }
 
     float3 compute_clip_space(in float2 position) {
@@ -158,17 +145,21 @@ vertex_shader : {
     ] 
 
     code : [[
-        static const float4 pos[3] = {
+       static const float4 pos[3] = {
             { -1,  1,  1, 1 },
             {  3,  1,  1, 1 },
             { -1, -3,  1, 1 },
         };
-        output.position = pos[input.vertex_id];
+    
+        bool taa_enabled = load_settings_mask() & SETTINGS_TAA_ENABLED;
+        output.position = taa_enabled ? add_taa_offset(pos[input.vertex_id], load_frame_number(), load_render_target_resolution()) : pos[input.vertex_id];
 
         float4x4 inverse_view = load_camera_inverse_view();
+        
         float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
+        cp = taa_enabled ? remove_taa_offset(cp, load_frame_number(), load_render_target_resolution()) : cp;
         float4 p = mul(cp, load_camera_inverse_projection());
-        output.camera_ray = mul(p.xyz, (float3x3)inverse_view);        
+        output.camera_ray = mul(p.xyz, (float3x3)inverse_view);
         return output;
     ]]
 }
@@ -196,7 +187,8 @@ pixel_shader : {
         uint steps = load_num_steps();
         float draw_distance = min(distance(inner, outer), load_draw_distance());
         float step_size = draw_distance / steps;
-        float t = step_size * halton_sequence_2d(load_frame_number() * length(v)).x;
+        // float t = step_size * hash13(load_time() * v);
+        float t = step_size * hash13(v * load_time());
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         
@@ -206,8 +198,8 @@ pixel_shader : {
         float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
 
         float3 sun_color = get_sky_color_physical(sun_dir);
-        float3 sky_light = get_sky_color_physical(float3(0, -1, 0)) * load_precipitation();
-
+        float3 sky_light = get_sky_color_physical(float3(0, -1, 0));
+        
         float dist = R;
 
         for (uint step = 0; step < steps; ++step) {
@@ -222,11 +214,10 @@ pixel_shader : {
             {
                 dist = min(dist, t);
 
-                float sigma_sca = load_scattering() * density;              // scattering coefficient
-                float sigma_ext = (sigma_sca + load_absorption()) * density; // scattering extinction
+                float sigma_sca = load_scattering() * density;
+                float sigma_ext = (sigma_sca + load_absorption()) * density;
 
-                float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
-                // ambient = saturate(2.0 * ambient + 0.5);
+                float3 ambient = sky_light * smoothstep(0.0, 1.0, rh) * load_precipitation();
 
                 float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
                 float Tr = exp(-sigma_ext * step_size);
@@ -237,7 +228,7 @@ pixel_shader : {
             }
             
             // opt out early for low transmittance
-            if (transmittance < 0.01) break;
+            if (transmittance < 0.1) break;
 
             t += step_size;
         }
@@ -254,11 +245,10 @@ pixel_shader : {
         bool outside = any(abs(screen_pos - 0.5) > 0.5);
 
         float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
-
-
+        
         float3 background_color = get_sky_color_physical(v);
         float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
-        scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), fog_amount);
+        scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), saturate(fog_amount));
 
         float4 color = float4(scattered_light + background_color * transmittance, transmittance);
 
