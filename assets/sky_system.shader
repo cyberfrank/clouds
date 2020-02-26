@@ -21,8 +21,9 @@ common : [[
     }
 
     float sun_intensity(in float cos_theta) {
-        const float steepness = 1.4142136; // sqrt(2)
-        return load_sun_intensity() * max(0, 1.0 - exp(-((PI / steepness - acos(cos_theta)) / steepness)));
+        const float cutoff_angle = PI / 1.8;
+        const float steepness = 1.5;
+        return load_sun_intensity() * max(0, 1.0 - exp(-((cutoff_angle - acos(cos_theta)) / steepness)));
     }
 
     float3 get_sky_color_physical(in float3 dir) {
@@ -61,7 +62,7 @@ common : [[
         // sun disk
         float sun_angular_cos = 1 - (load_sun_size() * 1e-4);
         float sun_disk = smoothstep(sun_angular_cos, sun_angular_cos + 1e-10, cos_theta);
-        reflected += (sun_e * ex * sun_disk);
+        reflected += (sun_e * PI * ex * sun_disk);
 
         return inscattered + reflected;
     }

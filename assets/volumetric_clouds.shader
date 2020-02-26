@@ -1,11 +1,10 @@
-
 raster_states : {
     polygon_mode: "fill"
 }
 
 samplers : {
     wrap_linear : {
-        anisotropy_enable: true
+        anisotropy_enable: false
         min_filter: "linear"
         max_filter: "linear"
         mip_mode: "linear"
@@ -19,6 +18,7 @@ imports : [
     { name: "num_steps" type: "uint" }
     { name: "coverage" type: "float" }
     { name: "precipitation" type: "float" }
+    { name: "erosion" type: "float" }
     { name: "cloud_type" type: "float" }
     { name: "weather_map" type: "texture_2d" }
     { name: "wind_vector" type: "float2" }
@@ -36,8 +36,7 @@ imports : [
 ]
 
 common : [[ 
-    float remap(in float value, in float old_min, in float old_max, in float new_min, in float new_max) 
-    {
+    float remap(in float value, in float old_min, in float old_max, in float new_min, in float new_max) {
         return new_min + (((value - old_min) / (old_max - old_min)) * (new_max - new_min));
     }
 
@@ -53,8 +52,7 @@ common : [[
         return saturate(y / load_atmosphere_thickness());
     }
 
-    float height_signal(in float rh, in float cloud_type)
-    {
+    float height_signal(in float rh, in float cloud_type) {
         const float4 g0 = float4(0.0, 0.1, 0.2, 0.3);  // stratus
         const float4 g1 = float4(0.02, 0.2, 0.48, 0.625);  // stratocumulus
         const float4 g2 = float4(0.0, 0.1625, 0.88, 0.98); // cumulus
@@ -74,15 +72,14 @@ common : [[
         return frac((p3.x + p3.y) * p3.z);
     }
 
-    float capture_sample(float3 pos, in float rh) 
-    {
+    float capture_sample(float3 pos, in float rh) {
         Texture3D shape = get_cloud_shape();
         Texture3D detail = get_cloud_detail();
         
         SamplerState sampler = get_sampler_wrap_linear();
 
         const float BASE_SCALE = 0.00005;
-        const float DETAIL_SCALE = 0.0015;
+        const float DETAIL_SCALE = 0.0012;
         const float WEATHER_SCALE = 0.00001;
 
         float2 wind_vec = load_wind_vector();
@@ -100,16 +97,15 @@ common : [[
         {
             float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 16.0).r;
             erosion = lerp(erosion, 1.0 - erosion, saturate(rh * 10.0));
-            density = remap(density, erosion * 0.4, 1.0, 0.0, 1.0);
+            density = remap(density, erosion * load_erosion(), 1.0, 0.0, 1.0);
         }
         
         // reduce density at the bottom
         return saturate(density * smoothstep(0.0, 1.0, rh));
     }
 
-    float volumetric_shadow(in float3 sun_dir, in float3 origin) 
-    {
-        const uint steps = 4;
+    float volumetric_shadow(in float3 sun_dir, in float3 origin) {
+        const uint steps = 6;
         float step_size = load_atmosphere_thickness() / float(steps);
 
         float3 increment = sun_dir * step_size;
@@ -127,13 +123,21 @@ common : [[
         return exp2(-step_size * shadow * ext);
     }
 
-    float3 compute_clip_space(in float2 position) {
-        float2 nds = 2.0 * position / load_render_target_resolution() - 1.0;
-        return float3(nds, 1.0);
+    float2 calc_last_screen_pos(in float2 screen_pos) {
+        float2 nds = (screen_pos / load_render_target_resolution()) * 2.0 - 1.0;
+        float3 clip_space_pos = float3(nds, 1.0);
+        float4 camera_to_world = mul(float4(clip_space_pos, 1), load_camera_inverse_view_projection());
+        camera_to_world /= camera_to_world.w;
+
+        // last frame sample position (p')
+        float4 p = mul(camera_to_world, load_camera_last_view_projection());
+        p /= p.w;
+
+        return p.xy * 0.5 + 0.5;
     }
 
-    float2 compute_screen_pos(in float2 ndc) {
-        return ndc * 0.5 + 0.5;
+    float radical_inverse_vdc(uint i) {
+        return reversebits(i) * 2.3283064365386963e-10;
     }
 ]]
 
@@ -142,23 +146,30 @@ vertex_shader : {
 
     exports : [        
         { name: "camera_ray" type: "float3" }
+        { name: "uv" type: "float2" }
+        { name: "frag_pos" type: "float4" }
     ] 
 
     code : [[
-       static const float4 pos[3] = {
+        static const float4 pos[3] = {
             { -1,  1,  1, 1 },
             {  3,  1,  1, 1 },
             { -1, -3,  1, 1 },
         };
-    
-        bool taa_enabled = load_settings_mask() & SETTINGS_TAA_ENABLED;
-        output.position = taa_enabled ? add_taa_offset(pos[input.vertex_id], load_frame_number(), load_render_target_resolution()) : pos[input.vertex_id];
+
+        static const float2 uvs[3] = {
+            { 0, 0 },
+            { 2, 0 },
+            { 0, 2 },
+        };
+
+        output.uv = uvs[input.vertex_id];
+        output.position = pos[input.vertex_id];
 
         float4x4 inverse_view = load_camera_inverse_view();
-        
         float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
-        cp = taa_enabled ? remove_taa_offset(cp, load_frame_number(), load_render_target_resolution()) : cp;
         float4 p = mul(cp, load_camera_inverse_projection());
+        output.frag_pos = p;
         output.camera_ray = mul(p.xyz, (float3x3)inverse_view);
         return output;
     ]]
@@ -187,19 +198,18 @@ pixel_shader : {
         uint steps = load_num_steps();
         float draw_distance = min(distance(inner, outer), load_draw_distance());
         float step_size = draw_distance / steps;
-        // float t = step_size * hash13(load_time() * v);
-        float t = step_size * hash13(v * load_time());
+        float t = step_size * hash13(v + frac(load_time()));
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         
         float3 sun_dir = load_sun_direction();
         float cos_theta = dot(v, sun_dir);
         // dual lobe phase function
-        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
+        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5).x;
 
         float3 sun_color = get_sky_color_physical(sun_dir);
         float3 sky_light = get_sky_color_physical(float3(0, -1, 0));
-        
+
         float dist = R;
 
         for (uint step = 0; step < steps; ++step) {
@@ -233,25 +243,15 @@ pixel_shader : {
             t += step_size;
         }
 
-        float3 clip_space_pos = compute_clip_space(input.position.xy);
-        float4 camera_to_world = mul(float4(clip_space_pos, 1), load_camera_inverse_view_projection());
-        camera_to_world /= camera_to_world.w;
-
-        // last frame sample position (p')
-        float4 p = mul(camera_to_world, load_camera_last_view_projection());
-        p /= p.w;
-
-        float2 screen_pos = compute_screen_pos(p.xy);
-        bool outside = any(abs(screen_pos - 0.5) > 0.5);
-
-        float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
-        
         float3 background_color = get_sky_color_physical(v);
         float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
         scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), saturate(fog_amount));
 
-        float4 color = float4(scattered_light + background_color * transmittance, transmittance);
+        float2 screen_pos = calc_last_screen_pos(input.position.xy);
+        float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
+        bool outside = any(abs(screen_pos - 0.5) > 0.5);
 
+        float4 color = float4(scattered_light + background_color * transmittance, 1.0);
         output.color = outside ? color : lerp(color, last_frame, 0.05);
         return output;
     ]]
