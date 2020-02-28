@@ -25,10 +25,10 @@ enum {
 };
 
 enum {
-    TM_CLOUD_QUALITY_LOW, // 8 steps
-    TM_CLOUD_QUALITY_MEDIUM, // 16 steps
-    TM_CLOUD_QUALITY_HIGH, // 24 steps
-    TM_CLOUD_QUALITY_ULTRA, // 32 steps
+    TM_CLOUD_QUALITY_LOW, // 13 steps
+    TM_CLOUD_QUALITY_MEDIUM, // 21 steps
+    TM_CLOUD_QUALITY_HIGH, // 29 steps
+    TM_CLOUD_QUALITY_ULTRA, // 37 steps
     TM_CLOUD_QUALITY_GROUND_TRUTH, // 256 steps
 };
 

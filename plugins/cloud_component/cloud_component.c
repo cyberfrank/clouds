@@ -110,6 +110,7 @@ typedef struct tm_component_manager_o
     struct
     {
         bool visualize_weather;
+        bool half_resolution;
     } settings;
 
 } tm_component_manager_o;
@@ -120,6 +121,7 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
 
     const tm_ui_menu_item_t items[] = {
         { .text = "Show Weather Texture", .toggle = &manager->settings.visualize_weather },
+        { .text = "Half Resolution", .toggle = &manager->settings.half_resolution },
     };
 
     const tm_ui_menu_t menu = {
@@ -133,14 +135,12 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
 }
 
 #define TM_VOLUMETRIC_CLOUDS_TARGET TM_STATIC_HASH("volumetric_clouds_target", 0xcb5166cb57718153ULL)
-#define TM_VOLUMETRIC_CLOUDS_HISTORY TM_STATIC_HASH("volumetric_clouds_copy", 0x1f3d3166df9e7926ULL)
 
 typedef struct cloud_pass_runtime_data_t
 {
     tm_shader_o *shader;
     tm_shader_constant_buffer_instance_t cbuffer;
     tm_shader_resource_binder_instance_t rbinder;
-    tm_render_graph_handle_t history_target;
 } cloud_pass_runtime_data_t;
 
 static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_render_graph_setup_o *graph_setup)
@@ -153,27 +153,23 @@ static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_rend
     if (!active)
         return;
 
-    tm_pass_render_target_t color_targets[TM_MAX_RENDER_TARGETS] = {
-        { 
-            .name = TM_VOLUMETRIC_CLOUDS_TARGET, 
-            .create = true, 
-            .inherits = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, 
-            .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD,
-            // .scale = { 0.5f, 0.5f, 1.0f },
-        }
-    };
+    float scale = manager->settings.half_resolution ? 0.5f : 1.0f;
+
+    tm_pass_render_target_t color_targets[TM_MAX_RENDER_TARGETS] = { { 
+        .name = TM_VOLUMETRIC_CLOUDS_TARGET,
+        .create = true,
+        .inherits = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION,
+        .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD,
+        .scale = { scale, scale, 1.0f },
+    }};
 
     tm_render_graph_toolbox_api->setup_render_target_writes(color_targets, 0, graph_setup);
-
-    tm_render_graph_handle_t handle = tm_render_graph_setup_api->external_resource(graph_setup, TM_VOLUMETRIC_CLOUDS_HISTORY);
-    tm_render_graph_setup_api->read_gpu_resource(graph_setup, handle, TM_RENDERER_RESOURCE_STATE_RESOURCE);
 
     cloud_pass_runtime_data_t *rdata = (cloud_pass_runtime_data_t*)runtime_data;
     *rdata = (cloud_pass_runtime_data_t) {
         .shader = c->shader,
         .cbuffer = c->cbuffer,
         .rbinder = c->rbinder,
-        .history_target = handle,
     };
 }
 
@@ -190,24 +186,6 @@ static void cloud_pass_execute(const void *const_data, void *runtime_data, uint6
         .non_indexed.num_vertices = 3,
         .num_instances = 1,
     };
-
-    tm_shader_io_o *io = tm_shader_api->shader_io(rdata->shader);
-
-    tm_shader_resource_t resource;
-    uint32_t slot;
-    if (tm_shader_api->lookup_resource(io, TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), &resource, &slot)) {
-        
-        uint32_t resource = tm_render_graph_execute_api->backend_handle(graph_execute, rdata->history_target);
-
-        tm_shader_api->update_resources(tm_shader_api->shader_io(rdata->shader), res_buf, &(tm_shader_resource_update_t){ 
-            .instance_id = rdata->rbinder.instance_id, 
-            .resource_slot = slot, 
-            .first_resource = 0, 
-            .num_resources = 1, 
-            .resources = &resource,
-            .resources_view_aspect_flags = 0 
-        }, 1);
-    }
 
     tm_renderer_shader_info_t shader_info;
     if (tm_shader_api->assemble_shader_infos(rdata->shader, 0, 0, tm_render_graph_execute_api->shader_context(graph_execute), res_buf, &rdata->cbuffer, &rdata->rbinder, 1, &shader_info)) {
@@ -234,21 +212,6 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
     tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
         .color_targets = {
-            { 
-                .name = TM_VOLUMETRIC_CLOUDS_HISTORY,
-                .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD, 
-                .store_op = TM_RENDERER_RESOURCE_STORE_OP_STORE,
-            }
-        },
-        .shader = TM_STATIC_HASH("copy", 0xd996b7bdf040ea8bULL),
-        .input_slots = {
-            { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_VOLUMETRIC_CLOUDS_TARGET } } }
-        },
-        .output_pass = true
-    }, "Copy");
-
-    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
-        .color_targets = {
             { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD }
         },
         .depth_stencil_target = {
@@ -258,7 +221,7 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
         .input_slots = {
             { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_VOLUMETRIC_CLOUDS_TARGET }, { TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION } } }
         }
-    }, "Reproject");
+    }, "Cloud Blur");
 
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
         .submenu_name = "Cloud Module",
@@ -271,7 +234,6 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
 static void graph_module_inject(struct tm_component_manager_o *manager, struct tm_render_graph_module_o *module)
 {
-    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_VOLUMETRIC_CLOUDS_HISTORY, 0, TM_VOLUMETRIC_CLOUDS_TARGET);
     tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
 }
 
@@ -318,7 +280,7 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_thickness", 0xfa5152e92fe4bd5eULL), &c->atmosphere_thickness, sizeof(uint32_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("draw_distance", 0x7b5664ab252ff2efULL), &c->draw_distance, sizeof(float));
         
-        uint32_t num_steps = (c->quality + 1) << 3;
+        uint32_t num_steps = ((c->quality + 1) << 3) + 5;
         if (c->quality == TM_CLOUD_QUALITY_GROUND_TRUTH)
             num_steps = 256;
 
