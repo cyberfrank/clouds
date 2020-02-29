@@ -66,7 +66,7 @@ typedef struct tm_cloud_component_t {
     uint32_t quality;
 
     float coverage;
-    float precipitation;
+    float blend_factor;
     float erosion;
     float cloud_type;
     float wind_direction;
@@ -110,6 +110,7 @@ typedef struct tm_component_manager_o
     struct
     {
         bool visualize_weather;
+        bool half_resolution;
     } settings;
 
 } tm_component_manager_o;
@@ -120,6 +121,7 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
 
     const tm_ui_menu_item_t items[] = {
         { .text = "Show Weather Texture", .toggle = &manager->settings.visualize_weather },
+        { .text = "Half Resolution", .toggle = &manager->settings.half_resolution },
     };
 
     const tm_ui_menu_t menu = {
@@ -153,13 +155,15 @@ static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_rend
     if (!active)
         return;
 
+    float scale = manager->settings.half_resolution ? 0.5f : 1.0f;
+
     tm_pass_render_target_t color_targets[TM_MAX_RENDER_TARGETS] = {
         { 
             .name = TM_VOLUMETRIC_CLOUDS_TARGET, 
             .create = true, 
             .inherits = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, 
             .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD,
-            // .scale = { 0.5f, 0.5f, 1.0f },
+            .scale = { scale, scale, 1.0f },
         }
     };
 
@@ -318,13 +322,13 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_thickness", 0xfa5152e92fe4bd5eULL), &c->atmosphere_thickness, sizeof(uint32_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("draw_distance", 0x7b5664ab252ff2efULL), &c->draw_distance, sizeof(float));
         
-        uint32_t num_steps = (c->quality + 1) << 3;
+        uint32_t num_steps = ((c->quality + 1) << 3) + 5;
         if (c->quality == TM_CLOUD_QUALITY_GROUND_TRUTH)
             num_steps = 256;
 
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("coverage", 0x6dde46384338bcacULL), &c->coverage, sizeof(float));
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("precipitation", 0x30d73ebc265650e0ULL), &c->precipitation, sizeof(float));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("blend_factor", 0x2ada11347762dcfbULL), &c->blend_factor, sizeof(float));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("erosion", 0x1b865623c464bbe1ULL), &c->erosion, sizeof(float));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("cloud_type", 0x3beb28659423dab6ULL), &c->cloud_type, sizeof(float));
 
@@ -373,7 +377,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_property_definition_t properties[] = {
         { "quality", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "coverage", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
-        { "precipitation", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
+        { "blend_factor", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "erosion", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "cloud_type", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "textures", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
@@ -398,7 +402,7 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_START, 1500);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS, 2000);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, 0.0f);
-    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, 1.0f);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__BLEND_FACTOR, 0.05f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__EROSION, 0.4f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, 0.5f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, 0.125f);
@@ -423,7 +427,7 @@ void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_clo
 
     c->quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
     c->coverage = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE);
-    c->precipitation = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION);
+    c->blend_factor = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__BLEND_FACTOR);
     c->erosion = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__EROSION);
     c->cloud_type = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE);
     c->wind_direction = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_DIRECTION);
@@ -568,6 +572,18 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     };
 
     item_rect.y = tm_properties_view_api->ui_uint32_dropdown(args, item_rect, "Quality", 0, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, options, 0, TM_ARRAY_COUNT(options));
+    item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, 
+        "Temporal Alpha", 
+        "Determines the contribution of a new frame. Lower values yields less banding but takes longer time to converge.", 
+        object, 
+        TM_TT_PROP__CLOUD_COMPONENT__BLEND_FACTOR, 
+        &(tm_properties_float_slider_t){
+            .min = 0.0f,
+            .max = 1.0f,
+            .step = 0.01f,
+            .show_edit_box = true,
+        }
+    );
 
     bool show_weather = false;
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Weather", 0, object, indent, true, &show_weather);
@@ -575,7 +591,6 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
         item_rect.x += TM_PROPERTIES_METRIC_INDENT;
         item_rect.y = tm_properties_view_api->ui_reference(args, item_rect, "Weather Map", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WEATHER_MAP);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Coverage", 0, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, &slider01);
-        item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Precipitation", 0, object, TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Erosion", 0, object, TM_TT_PROP__CLOUD_COMPONENT__EROSION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Cloud Type", 0, object, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Wind Direction", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WIND_DIRECTION, &slider01);

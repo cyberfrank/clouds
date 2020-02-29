@@ -9,7 +9,7 @@ struct tm_api_registry_api;
 enum {
     TM_TT_PROP__CLOUD_COMPONENT__QUALITY, // uint32
     TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, // float
-    TM_TT_PROP__CLOUD_COMPONENT__PRECIPITATION, // float
+    TM_TT_PROP__CLOUD_COMPONENT__BLEND_FACTOR, // float
     TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, // float
     TM_TT_PROP__CLOUD_COMPONENT__EROSION, // float
     TM_TT_PROP__CLOUD_COMPONENT__WEATHER_MAP, // reference(TM_TT_TYPE__ASSET)
@@ -25,10 +25,10 @@ enum {
 };
 
 enum {
-    TM_CLOUD_QUALITY_LOW, // 8 steps
-    TM_CLOUD_QUALITY_MEDIUM, // 16 steps
-    TM_CLOUD_QUALITY_HIGH, // 24 steps
-    TM_CLOUD_QUALITY_ULTRA, // 32 steps
+    TM_CLOUD_QUALITY_LOW, // 13 steps
+    TM_CLOUD_QUALITY_MEDIUM, // 21 steps
+    TM_CLOUD_QUALITY_HIGH, // 29 steps
+    TM_CLOUD_QUALITY_ULTRA, // 37 steps
     TM_CLOUD_QUALITY_GROUND_TRUTH, // 256 steps
 };
 

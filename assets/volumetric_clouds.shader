@@ -17,7 +17,7 @@ samplers : {
 imports : [
     { name: "num_steps" type: "uint" }
     { name: "coverage" type: "float" }
-    { name: "precipitation" type: "float" }
+    { name: "blend_factor" type: "float" }
     { name: "erosion" type: "float" }
     { name: "cloud_type" type: "float" }
     { name: "weather_map" type: "texture_2d" }
@@ -105,7 +105,7 @@ common : [[
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) {
-        const uint steps = 6;
+        const uint steps = 16;
         float step_size = load_atmosphere_thickness() / float(steps);
 
         float3 increment = sun_dir * step_size;
@@ -123,10 +123,10 @@ common : [[
         return exp2(-step_size * shadow * ext);
     }
 
-    float2 calc_last_screen_pos(in float2 screen_pos) {
-        float2 nds = (screen_pos / load_render_target_resolution()) * 2.0 - 1.0;
-        float3 clip_space_pos = float3(nds, 1.0);
-        float4 camera_to_world = mul(float4(clip_space_pos, 1), load_camera_inverse_view_projection());
+    float2 calc_last_screen_pos(float2 screen_pos, float depth) {
+        float2 nds = 2.0 * screen_pos / load_render_target_resolution() - 1.0;
+        float3 clip_space_pos = float3(nds, 1);
+        float4 camera_to_world = mul(float4(clip_space_pos, 1.0), load_camera_inverse_view_projection());
         camera_to_world /= camera_to_world.w;
 
         // last frame sample position (p')
@@ -134,6 +134,13 @@ common : [[
         p /= p.w;
 
         return p.xy * 0.5 + 0.5;
+    }
+
+    float2 reproject(float3 wpos) {
+        float4 last_cp = mul(float4(wpos, 1), load_camera_last_view_projection());
+        last_cp /= last_cp.w;
+
+        return float2(last_cp.x, -last_cp.y) * 0.5 + 0.5;
     }
 
     float radical_inverse_vdc(uint i) {
@@ -189,16 +196,19 @@ pixel_shader : {
             return output;
         }
 
-        float R = load_planet_radius();
+        float2 screen_pos = reproject(load_camera_position() + v * load_draw_distance());
+        float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
+        bool outside = any(abs(screen_pos - 0.5) > 0.5);
 
-        float3 offset = load_camera_position() + float3(0, R, 0);
-        float3 inner = ray_sphere_intersect(R + load_atmosphere_start(), offset, v);
-        float3 outer = ray_sphere_intersect(R + load_atmosphere_start() + load_atmosphere_thickness(), offset, v);
+        float radius = load_planet_radius();
+        float3 offset = load_camera_position() + float3(0, radius, 0);
+        float3 inner = ray_sphere_intersect(radius + load_atmosphere_start(), offset, v);
+        float3 outer = ray_sphere_intersect(radius + load_atmosphere_start() + load_atmosphere_thickness(), offset, v);
 
         uint steps = load_num_steps();
         float draw_distance = min(distance(inner, outer), load_draw_distance());
         float step_size = draw_distance / steps;
-        float t = step_size * hash13(v + frac(load_time()));
+        float t = step_size * radical_inverse_vdc(load_frame_number());
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         
@@ -210,7 +220,7 @@ pixel_shader : {
         float3 sun_color = get_sky_color_physical(sun_dir);
         float3 sky_light = get_sky_color_physical(float3(0, -1, 0));
 
-        float dist = R;
+        float dist = radius;
 
         for (uint step = 0; step < steps; ++step) {
             float3 pos = inner + v * t;
@@ -227,7 +237,7 @@ pixel_shader : {
                 float sigma_sca = load_scattering() * density;
                 float sigma_ext = (sigma_sca + load_absorption()) * density;
 
-                float3 ambient = sky_light * smoothstep(0.0, 1.0, rh) * load_precipitation();
+                float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
 
                 float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
                 float Tr = exp(-sigma_ext * step_size);
@@ -247,12 +257,8 @@ pixel_shader : {
         float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
         scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), saturate(fog_amount));
 
-        float2 screen_pos = calc_last_screen_pos(input.position.xy);
-        float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
-        bool outside = any(abs(screen_pos - 0.5) > 0.5);
-
         float4 color = float4(scattered_light + background_color * transmittance, 1.0);
-        output.color = outside ? color : lerp(color, last_frame, 0.05);
+        output.color = outside ? color : lerp(last_frame, color, load_blend_factor());
         return output;
     ]]
 }
