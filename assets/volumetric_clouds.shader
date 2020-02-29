@@ -1,3 +1,7 @@
+raster_states : {
+    polygon_mode: "fill"
+}
+
 samplers : {
     wrap_linear : {
         anisotropy_enable: false
@@ -28,6 +32,7 @@ imports : [
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
     { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" } 
+    { name: "history" type: "texture_2d" }
 ]
 
 common : [[ 
@@ -65,16 +70,6 @@ common : [[
         p3 = frac(p3 * 1031.1031);
         p3 += dot(p3, p3.yzx + 19.19);
         return frac((p3.x + p3.y) * p3.z);
-    }
-
-    float hash12( uint2 x ) {
-        uint2 q = 1103515245U * ( (x>>1U) ^ (x.yx   ) );
-        uint  n = 1103515245U * ( (q.x  ) ^ (q.y>>3U) );
-        return float(n) * (1.0/float(0xffffffffU));
-    }
-
-    float radical_inverse_vdc(uint i) {
-        return reversebits(i) * 2.3283064365386963e-10;
     }
 
     float capture_sample(float3 pos, in float rh) {
@@ -159,6 +154,7 @@ vertex_shader : {
     exports : [        
         { name: "camera_ray" type: "float3" }
         { name: "uv" type: "float2" }
+        { name: "frag_pos" type: "float4" }
     ] 
 
     code : [[
@@ -174,13 +170,14 @@ vertex_shader : {
             { 0, 2 },
         };
 
-        output.position = pos[input.vertex_id];
         output.uv = uvs[input.vertex_id];
+        output.position = pos[input.vertex_id];
 
         float4x4 inverse_view = load_camera_inverse_view();
         float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
         float4 p = mul(cp, load_camera_inverse_projection());
-        output.camera_ray = mul(p.xyz, (float3x3)inverse_view);      
+        output.frag_pos = p;
+        output.camera_ray = mul(p.xyz, (float3x3)inverse_view);
         return output;
     ]]
 }
@@ -259,7 +256,6 @@ pixel_shader : {
         float3 background_color = get_sky_color_physical(v);
         float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
         scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), saturate(fog_amount));
-        float4 color = float4(scattered_light + background_color * transmittance, fog_amount);
 
         float4 color = float4(scattered_light + background_color * transmittance, 1.0);
         output.color = outside ? color : lerp(last_frame, color, load_blend_factor());
