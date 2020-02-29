@@ -62,7 +62,7 @@ common : [[
         // sun disk
         float sun_angular_cos = 1 - (load_sun_size() * 1e-4);
         float sun_disk = smoothstep(sun_angular_cos, sun_angular_cos + 1e-10, cos_theta);
-        reflected += (sun_e * PI * ex * sun_disk);
+        reflected += (sun_e * ex * sun_disk);
 
         return inscattered + reflected;
     }
