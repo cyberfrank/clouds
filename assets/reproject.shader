@@ -64,10 +64,8 @@ pixel_shader : {
         // hdr accumulation target
         float4 hdr = get_textures(1).Load(int3(input.position.xy, 0));
 
-        #ifdef SKY_SYSTEM
-            if (v.y > 0)
-                hdr.rgb = get_sky_color_physical(v);
-        #endif
+        if (v.y > 0)
+            hdr.rgb = float3(0, 0, 0);
 
         float4 clouds = get_textures(0).Sample(get_sampler_linear(), input.uv);
         output.color = float4(clouds.rgb + hdr.rgb * clouds.a, 1.0);

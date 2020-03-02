@@ -250,7 +250,8 @@ pixel_shader : {
         float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
         scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), saturate(fog_amount));
 
-        float4 curr_frame = float4(scattered_light, transmittance);
+        // @hack background should in reality be added before the cloud pass
+        float4 curr_frame = float4(scattered_light + background_color * transmittance, transmittance);
         float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
 
         output.color = outside ? curr_frame : lerp(last_frame, curr_frame, load_blend_factor());
