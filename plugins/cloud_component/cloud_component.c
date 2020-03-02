@@ -238,11 +238,7 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
     tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
         .color_targets = {
-            { 
-                .name = TM_VOLUMETRIC_CLOUDS_HISTORY,
-                .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD, 
-                .store_op = TM_RENDERER_RESOURCE_STORE_OP_STORE,
-            }
+            { .name = TM_VOLUMETRIC_CLOUDS_HISTORY, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD }
         },
         .shader = TM_STATIC_HASH("copy", 0xd996b7bdf040ea8bULL),
         .input_slots = {
@@ -253,7 +249,7 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
     tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
         .color_targets = {
-            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD }
+            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .scale = { 0.5f, 0.5f, 1.0f }, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD }
         },
         .depth_stencil_target = {
             .name = TM_DEFAULT_RENDER_PIPE_MAIN_DEPTH_STENCIL_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD,
@@ -275,7 +271,9 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
 static void graph_module_inject(struct tm_component_manager_o *manager, struct tm_render_graph_module_o *module)
 {
-    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_VOLUMETRIC_CLOUDS_HISTORY, 0, TM_VOLUMETRIC_CLOUDS_TARGET);
+    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_VOLUMETRIC_CLOUDS_HISTORY, &(tm_renderer_image_buffer_t) {
+        .debug_tag = "volumetric_clouds_history"
+    }, TM_VOLUMETRIC_CLOUDS_TARGET);
     tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
 }
 

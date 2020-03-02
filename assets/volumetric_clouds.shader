@@ -12,6 +12,12 @@ samplers : {
         address_v: "wrap"
         address_w: "wrap"
     }
+    wrap_point : {
+        min_filter: "point"
+        max_filter: "point"
+        address_u: "wrap"
+        address_v: "wrap"
+    }
 }
 
 imports : [
@@ -32,6 +38,7 @@ imports : [
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
     { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" } 
+    { name: "sampler_wrap_point" type: "sampler" sampler: "wrap_point" } 
     { name: "history" type: "texture_2d" }
 ]
 
@@ -64,12 +71,6 @@ common : [[
         float4 gradient = g0 * a + g1 * b + g2 * c;
 
         return smoothstep(gradient.x, gradient.y, rh) - smoothstep(gradient.z, gradient.w, rh);
-    }
-
-    float hash13(float3 p3) {
-        p3 = frac(p3 * 1031.1031);
-        p3 += dot(p3, p3.yzx + 19.19);
-        return frac((p3.x + p3.y) * p3.z);
     }
 
     float capture_sample(float3 pos, in float rh) {
@@ -105,14 +106,15 @@ common : [[
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) {
-        const uint steps = 16;
+        const uint steps = 4;
         float step_size = load_atmosphere_thickness() / float(steps);
 
-        float3 increment = sun_dir * step_size;
-        float3 position = origin + increment * 0.5;
+        float t = step_size * 0.5;
         float shadow = 0.0;
+        float3 position;
 
-        for (uint step = 0; step < steps; ++step, position += increment) {
+        for (uint step = 0; step < steps; ++step, t += step_size) {
+            position = origin + sun_dir * t;
             float rh = height_in_shell(position);
             float density = capture_sample(position, rh);
             shadow += density;
@@ -121,19 +123,6 @@ common : [[
         // extinction coefficient should be added to ensure energy conservation
         float ext = load_scattering() * shadow + load_absorption();
         return exp2(-step_size * shadow * ext);
-    }
-
-    float2 calc_last_screen_pos(float2 screen_pos, float depth) {
-        float2 nds = 2.0 * screen_pos / load_render_target_resolution() - 1.0;
-        float3 clip_space_pos = float3(nds, 1);
-        float4 camera_to_world = mul(float4(clip_space_pos, 1.0), load_camera_inverse_view_projection());
-        camera_to_world /= camera_to_world.w;
-
-        // last frame sample position (p')
-        float4 p = mul(camera_to_world, load_camera_last_view_projection());
-        p /= p.w;
-
-        return p.xy * 0.5 + 0.5;
     }
 
     float2 reproject(float3 wpos) {
@@ -197,7 +186,6 @@ pixel_shader : {
         }
 
         float2 screen_pos = reproject(load_camera_position() + v * load_draw_distance());
-        float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
         bool outside = any(abs(screen_pos - 0.5) > 0.5);
 
         float radius = load_planet_radius();
@@ -206,6 +194,13 @@ pixel_shader : {
         float3 outer = ray_sphere_intersect(radius + load_atmosphere_start() + load_atmosphere_thickness(), offset, v);
 
         uint steps = load_num_steps();
+
+        // to avoid artifacts at the edges, more steps are required where the 
+        // previous frame information was not `available`
+        if (outside) {
+            steps *= 16;
+        }
+
         float draw_distance = min(distance(inner, outer), load_draw_distance());
         float step_size = draw_distance / steps;
         float t = step_size * radical_inverse_vdc(load_frame_number());
@@ -215,14 +210,14 @@ pixel_shader : {
         float3 sun_dir = load_sun_direction();
         float cos_theta = dot(v, sun_dir);
         // dual lobe phase function
-        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5).x;
+        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
 
         float3 sun_color = get_sky_color_physical(sun_dir);
         float3 sky_light = get_sky_color_physical(float3(0, -1, 0));
 
         float dist = radius;
 
-        for (uint step = 0; step < steps; ++step) {
+        for (uint step = 0; step < steps; ++step, t += step_size) {
             float3 pos = inner + v * t;
             // get relative height in atmosphere
             float rh = height_in_shell(pos);
@@ -249,16 +244,16 @@ pixel_shader : {
             
             // opt out early for low transmittance
             if (transmittance < 0.1) break;
-
-            t += step_size;
         }
-
+        
         float3 background_color = get_sky_color_physical(v);
         float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
         scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), saturate(fog_amount));
 
-        float4 color = float4(scattered_light + background_color * transmittance, 1.0);
-        output.color = outside ? color : lerp(last_frame, color, load_blend_factor());
+        float4 curr_frame = float4(scattered_light, transmittance);
+        float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
+
+        output.color = outside ? curr_frame : lerp(last_frame, curr_frame, load_blend_factor());
         return output;
     ]]
 }
