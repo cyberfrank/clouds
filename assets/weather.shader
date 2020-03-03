@@ -89,7 +89,7 @@ pixel_shader : {
         float r = set_range(fbm(uv, 20, 12), min, max);
         float g = set_range(fbm(uv, 20, 12), min, max);
 
-        output.color = saturate(float4(r , g, 0, 1));
+        output.color = saturate(float4(r, g, 0, 1));
         return output;
     ]]
 }

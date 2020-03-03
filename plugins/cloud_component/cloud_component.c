@@ -105,6 +105,7 @@ typedef struct tm_component_manager_o
     {
         bool visualize_weather;
         bool half_resolution;
+        bool weather_async_compute;
     } settings;
 
 } tm_component_manager_o;
@@ -116,6 +117,7 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
     const tm_ui_menu_item_t items[] = {
         { .text = "Show Weather Texture", .toggle = &manager->settings.visualize_weather },
         { .text = "Half Resolution", .toggle = &manager->settings.half_resolution },
+        { .text = "Weather Async Compute", .toggle = &manager->settings.weather_async_compute },
     };
 
     const tm_ui_menu_t menu = {
@@ -230,18 +232,23 @@ static void cloud_pass_execute(const void *const_data, void *runtime_data, uint6
     }
 }
 
-static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *manager)
+static void weather_pass_setup(const void *const_data, void *runtime_data, tm_render_graph_setup_o *graph_setup)
 {
-    tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
+    struct tm_component_manager_o *manager = *(tm_component_manager_o **)const_data;
 
-    // weather map generation pass
-    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
+    tm_render_graph_setup_api->set_request_async_compute(graph_setup, manager->settings.weather_async_compute);
+    tm_render_graph_toolbox_api->setup_fullscreen_pass(&(tm_fullscreen_pass_setup_t){
         .color_targets = {
             { .name = TM_WEATHER_MAP_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD }
         },
         .shader = TM_STATIC_HASH("weather", 0xd7255c420f6f7d3dULL),
         .output_pass = true,
-    }, "Weather Map");
+    }, runtime_data, graph_setup);
+}
+
+static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *manager)
+{
+    tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
 
     tm_render_graph_pass_i pass = {
         .api = {
@@ -279,6 +286,8 @@ static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *man
         }
     }, "Reproject");
 
+    tm_render_graph_toolbox_api->custom_fullscreen_pass(mod, weather_pass_setup, &manager, sizeof(tm_component_manager_o *), "Weather Map Compute");
+
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
         .submenu_name = "Cloud Module",
         .inst = manager,
@@ -297,7 +306,6 @@ static void weather_map_debug_pass(const void *const_data, void *runtime_data, s
     if (!active)
         return;
 
-    tm_render_graph_setup_api->set_request_async_compute(graph_setup, true);
     tm_render_graph_toolbox_api->setup_fullscreen_pass(&(tm_fullscreen_pass_setup_t){
         .color_targets = {
             { .name = TM_DEFAULT_RENDER_PIPE_MAIN_OUTPUT_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD, }
@@ -620,6 +628,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Weather", 0, object, indent, true, &show_weather);
     if (show_weather) {
         item_rect.x += TM_PROPERTIES_METRIC_INDENT;
+
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Coverage", 0, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Erosion", 0, object, TM_TT_PROP__CLOUD_COMPONENT__EROSION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Cloud Type", 0, object, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, &slider01);
