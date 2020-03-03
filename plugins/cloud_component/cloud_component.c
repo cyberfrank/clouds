@@ -87,13 +87,6 @@ typedef struct tm_cloud_component_t {
         uint64_t version;
     } textures;
 
-    // weather map
-    struct
-    {
-        uint64_t asset;
-        uint64_t version;
-    } weather_map;
-
 } tm_cloud_component_t;
 
 typedef struct tm_component_manager_o
@@ -104,7 +97,8 @@ typedef struct tm_component_manager_o
     tm_allocator_i allocator;
     tm_shader_repository_o *repo;
 
-    tm_render_graph_module_o *module;
+    tm_render_graph_module_o *cloud_module;
+    tm_render_graph_module_o *debug_module;
     tm_cloud_component_t *active_cloud_component;
 
     struct
@@ -136,6 +130,7 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
 
 #define TM_VOLUMETRIC_CLOUDS_TARGET TM_STATIC_HASH("volumetric_clouds_target", 0xcb5166cb57718153ULL)
 #define TM_VOLUMETRIC_CLOUDS_HISTORY TM_STATIC_HASH("volumetric_clouds_copy", 0x1f3d3166df9e7926ULL)
+#define TM_WEATHER_MAP_TARGET TM_STATIC_HASH("weather_map_target", 0x7ac23e6ada50f0a9ULL)
 
 typedef struct cloud_pass_runtime_data_t
 {
@@ -143,6 +138,7 @@ typedef struct cloud_pass_runtime_data_t
     tm_shader_constant_buffer_instance_t cbuffer;
     tm_shader_resource_binder_instance_t rbinder;
     tm_render_graph_handle_t history_target;
+    tm_render_graph_handle_t weather_map_target;
 } cloud_pass_runtime_data_t;
 
 static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_render_graph_setup_o *graph_setup)
@@ -169,15 +165,18 @@ static void cloud_pass_setup(const void *const_data, void *runtime_data, tm_rend
 
     tm_render_graph_toolbox_api->setup_render_target_writes(color_targets, 0, graph_setup);
 
-    tm_render_graph_handle_t handle = tm_render_graph_setup_api->external_resource(graph_setup, TM_VOLUMETRIC_CLOUDS_HISTORY);
-    tm_render_graph_setup_api->read_gpu_resource(graph_setup, handle, TM_RENDERER_RESOURCE_STATE_RESOURCE);
+    tm_render_graph_handle_t history_target = tm_render_graph_setup_api->external_resource(graph_setup, TM_VOLUMETRIC_CLOUDS_HISTORY);
+    tm_render_graph_handle_t weather_map_target = tm_render_graph_setup_api->external_resource(graph_setup, TM_WEATHER_MAP_TARGET);
+    tm_render_graph_setup_api->read_gpu_resource(graph_setup, history_target, TM_RENDERER_RESOURCE_STATE_RESOURCE);
+    tm_render_graph_setup_api->read_gpu_resource(graph_setup, weather_map_target, TM_RENDERER_RESOURCE_STATE_RESOURCE);
 
     cloud_pass_runtime_data_t *rdata = (cloud_pass_runtime_data_t*)runtime_data;
     *rdata = (cloud_pass_runtime_data_t) {
         .shader = c->shader,
         .cbuffer = c->cbuffer,
         .rbinder = c->rbinder,
-        .history_target = handle,
+        .history_target = history_target,
+        .weather_map_target = weather_map_target,
     };
 }
 
@@ -199,10 +198,21 @@ static void cloud_pass_execute(const void *const_data, void *runtime_data, uint6
 
     tm_shader_resource_t resource;
     uint32_t slot;
-    if (tm_shader_api->lookup_resource(io, TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), &resource, &slot)) {
-        
-        uint32_t resource = tm_render_graph_execute_api->backend_handle(graph_execute, rdata->history_target);
 
+    if (tm_shader_api->lookup_resource(io, TM_STATIC_HASH("history", 0xee0b17af3674bb0fULL), &resource, &slot)) {
+        uint32_t resource = tm_render_graph_execute_api->backend_handle(graph_execute, rdata->history_target);
+        tm_shader_api->update_resources(tm_shader_api->shader_io(rdata->shader), res_buf, &(tm_shader_resource_update_t){ 
+            .instance_id = rdata->rbinder.instance_id, 
+            .resource_slot = slot, 
+            .first_resource = 0, 
+            .num_resources = 1, 
+            .resources = &resource,
+            .resources_view_aspect_flags = 0 
+        }, 1);
+    }
+
+    if (tm_shader_api->lookup_resource(io, TM_STATIC_HASH("weather_map", 0x95323a8725dcd458ULL), &resource, &slot)) {
+        uint32_t resource = tm_render_graph_execute_api->backend_handle(graph_execute, rdata->weather_map_target);
         tm_shader_api->update_resources(tm_shader_api->shader_io(rdata->shader), res_buf, &(tm_shader_resource_update_t){ 
             .instance_id = rdata->rbinder.instance_id, 
             .resource_slot = slot, 
@@ -220,9 +230,18 @@ static void cloud_pass_execute(const void *const_data, void *runtime_data, uint6
     }
 }
 
-static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_manager_o *manager)
+static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *manager)
 {
     tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
+
+    // weather map generation pass
+    tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
+        .color_targets = {
+            { .name = TM_WEATHER_MAP_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD }
+        },
+        .shader = TM_STATIC_HASH("weather", 0xd7255c420f6f7d3dULL),
+        .output_pass = true,
+    }, "Weather Map");
 
     tm_render_graph_pass_i pass = {
         .api = {
@@ -249,7 +268,7 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
 
     tm_render_graph_toolbox_api->fullscreen_pass(mod, &(tm_fullscreen_pass_setup_t){
         .color_targets = {
-            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .scale = { 0.5f, 0.5f, 1.0f }, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD }
+            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD }
         },
         .depth_stencil_target = {
             .name = TM_DEFAULT_RENDER_PIPE_MAIN_DEPTH_STENCIL_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD,
@@ -269,12 +288,46 @@ static tm_render_graph_module_o *create_volumetric_cloud_module(tm_component_man
     return mod;
 }
 
+static void weather_map_debug_pass(const void *const_data, void *runtime_data, struct tm_render_graph_setup_o *graph_setup)
+{
+    struct tm_component_manager_o *manager = *(tm_component_manager_o **)const_data;
+    bool active = manager->settings.visualize_weather != 0;
+
+    tm_render_graph_setup_api->set_active(graph_setup, active);
+    if (!active)
+        return;
+
+    tm_render_graph_setup_api->set_request_async_compute(graph_setup, true);
+    tm_render_graph_toolbox_api->setup_fullscreen_pass(&(tm_fullscreen_pass_setup_t){
+        .color_targets = {
+            { .name = TM_DEFAULT_RENDER_PIPE_MAIN_OUTPUT_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_LOAD, }
+        },
+        .shader = TM_STATIC_HASH("weather_debug", 0x854413d2de4993c0ULL),
+        .input_slots = {
+            { .slot_name = TM_STATIC_HASH("texture", 0xcd4238c6a0c69e32ULL), .resources = { { TM_WEATHER_MAP_TARGET } } }
+        },
+        .output_pass = true,
+    }, runtime_data, graph_setup);
+}
+
+static tm_render_graph_module_o *create_debug_module(tm_component_manager_o *manager)
+{
+    tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
+    tm_render_graph_toolbox_api->custom_fullscreen_pass(mod, weather_map_debug_pass, &manager, sizeof(tm_component_manager_o *), "Weather Map Debug");
+    return mod;
+}
+
 static void graph_module_inject(struct tm_component_manager_o *manager, struct tm_render_graph_module_o *module)
 {
-    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_VOLUMETRIC_CLOUDS_HISTORY, &(tm_renderer_image_buffer_t) {
-        .debug_tag = "volumetric_clouds_history"
-    }, TM_VOLUMETRIC_CLOUDS_TARGET);
-    tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->module);
+    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_WEATHER_MAP_TARGET, &(tm_renderer_image_buffer_t){
+        .width = 1024,
+        .height = 1024,
+        .debug_tag = "weather_map",
+    }, TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION);
+
+    tm_render_graph_module_api->create_persistent_gpu_image(module, TM_VOLUMETRIC_CLOUDS_HISTORY, 0, TM_VOLUMETRIC_CLOUDS_TARGET);
+    tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_SKYDOME, manager->cloud_module);
+    tm_render_graph_module_api->insert_extension(module, TM_DEFAULT_RENDER_PIPE_MAIN_EXTENSION_DEBUG_VISUALIZATION, manager->debug_module);
 }
 
 static bool set_constant(tm_shader_io_o *io, tm_renderer_resource_command_buffer_o *res_buf, tm_shader_constant_buffer_instance_t *instance,
@@ -342,17 +395,6 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("scattering", 0xdb01fc64550b55eaULL), &c->scattering, sizeof(float));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("absorption", 0xb6b15328196ed6e9ULL), &c->absorption, sizeof(float));
 
-        if (c->weather_map.asset) {
-            uint64_t wanted_version = tm_creation_graph_api->graph_version(c->weather_map.asset);
-            if (wanted_version != c->weather_map.version) {
-                tm_creation_graph_output_t image_output = tm_creation_graph_api->output(manager->tt, c->weather_map.asset, TM_CREATION_GRAPH__IMAGE__OUTPUT_NODE_HASH, wanted_version, manager->rb, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL, 0, 0);
-                c->weather_map.version = image_output.version;
-
-                tm_creation_graph_image_data_t *image = (tm_creation_graph_image_data_t *)image_output.output;
-                set_resource(io, res_buf, &c->rbinder, TM_STATIC_HASH("weather_map", 0x95323a8725dcd458ULL), &image->handle, 0, 0, 1);
-            }
-        }
-
         if (c->textures.asset) {
             uint64_t wanted_version = tm_creation_graph_api->graph_version(c->textures.asset);
             if (wanted_version != c->textures.version) {
@@ -379,7 +421,6 @@ void create_truth_types(struct tm_the_truth_o *tt)
         { "erosion", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "cloud_type", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "textures", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
-        { "weather_map", TM_THE_TRUTH_PROPERTY_TYPE_REFERENCE, .type_hash = TM_TT_TYPE_HASH__CREATION_GRAPH },
         { "wind_direction", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "wind_speed", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "planet_radius", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
@@ -415,12 +456,10 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_aspect(tt, object_type, TM_TT_ASPECT__PROPERTIES, properties_aspect);
 
     tm_the_truth_api->set_property_aspect(tt, object_type, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES, TM_TT_PROP_ASPECT__PROPERTIES__ASSET_PICKER, TM_TT_TYPE__CREATION_GRAPH);
-    tm_the_truth_api->set_property_aspect(tt, object_type, TM_TT_PROP__CLOUD_COMPONENT__WEATHER_MAP, TM_TT_PROP_ASPECT__PROPERTIES__ASSET_PICKER, TM_TT_TYPE__CREATION_GRAPH);
 }
 
 void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_cloud_component_t *c, const struct tm_the_truth_o *tt, uint64_t asset)
 {
-    uint64_t ref;
     const tm_the_truth_object_o *object = tm_the_truth_api->read(tt, asset);
 
     c->quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
@@ -436,16 +475,8 @@ void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_clo
     c->scattering = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
     c->absorption = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
     c->draw_distance = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE);
-    
-    // set weather map
-    ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__WEATHER_MAP);
-    if (ref != c->weather_map.asset) {
-        c->weather_map.asset = ref;
-        c->weather_map.version = 0;
-    }
 
-    // set volume textures
-    ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES);
+    uint64_t ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES);
     if (ref != c->textures.asset) {
         c->textures.asset = ref;
         c->textures.version = 0;
@@ -481,7 +512,8 @@ void destroy_component(struct tm_component_manager_o *manager)
     backend->create_resource_command_buffers(backend->inst, &res_buf, 1);
 
     // destroy volumetric cloud module
-    tm_render_graph_module_api->destroy(manager->module, res_buf);
+    tm_render_graph_module_api->destroy(manager->cloud_module, res_buf);
+    tm_render_graph_module_api->destroy(manager->debug_module, res_buf);
 
     backend->submit_resource_command_buffers(backend->inst, &res_buf, 1);
     backend->destroy_resource_command_buffers(backend->inst, &res_buf, 1);
@@ -513,8 +545,9 @@ void create_component(struct tm_entity_context_o *ctx)
         .repo = repo,
     };
 
-    // create cloud module
-    manager->module = create_volumetric_cloud_module(manager);
+    // create render modules
+    manager->cloud_module = create_cloud_module(manager);
+    manager->debug_module = create_debug_module(manager);
 
     tm_component_i component = {
         .name = TM_TT_TYPE__CLOUD_COMPONENT,
@@ -587,7 +620,6 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Weather", 0, object, indent, true, &show_weather);
     if (show_weather) {
         item_rect.x += TM_PROPERTIES_METRIC_INDENT;
-        item_rect.y = tm_properties_view_api->ui_reference(args, item_rect, "Weather Map", 0, object, TM_TT_PROP__CLOUD_COMPONENT__WEATHER_MAP);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Coverage", 0, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Erosion", 0, object, TM_TT_PROP__CLOUD_COMPONENT__EROSION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Cloud Type", 0, object, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, &slider01);

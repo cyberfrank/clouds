@@ -78,6 +78,5 @@ compile : {
 
     variations : [
         { systems: [ "viewer_system" ] }
-        { systems: [ "viewer_system", "sky_system" ] }
     ]
 }

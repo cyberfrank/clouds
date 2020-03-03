@@ -12,12 +12,6 @@ samplers : {
         address_v: "wrap"
         address_w: "wrap"
     }
-    wrap_point : {
-        min_filter: "point"
-        max_filter: "point"
-        address_u: "wrap"
-        address_v: "wrap"
-    }
 }
 
 imports : [
@@ -38,7 +32,6 @@ imports : [
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
     { name: "sampler_wrap_linear" type: "sampler" sampler: "wrap_linear" } 
-    { name: "sampler_wrap_point" type: "sampler" sampler: "wrap_point" } 
     { name: "history" type: "texture_2d" }
 ]
 
@@ -79,24 +72,25 @@ common : [[
         
         SamplerState sampler = get_sampler_wrap_linear();
 
-        const float BASE_SCALE = 0.00005;
+        const float BASE_SCALE = 0.00008;
         const float DETAIL_SCALE = 0.0012;
         const float WEATHER_SCALE = 0.00001;
 
         float2 wind_vec = load_wind_vector();
-        float3 wind = float3(wind_vec.x, 0.1, wind_vec.y) * load_time() * load_wind_speed();
+        float3 wind = float3(wind_vec.x, 0.2, wind_vec.y) * load_time() * load_wind_speed();
 
         float3 weather = get_weather_map().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
 
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
-        base_cloud *= height_signal(rh, load_cloud_type());
+        base_cloud *= height_signal(rh, weather.g * load_cloud_type());
 
-        float coverage = weather.r * (1.0 - load_coverage());
+        float coverage = (1.0 - weather.r) * (1.0 - load_coverage());
         float density = remap(base_cloud, coverage, 1.0, 0.0, 1.0);
+        // density *= (1.0 - weather.r);
 
         if (density > 0)
         {
-            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 16.0).r;
+            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 16).r;
             erosion = lerp(erosion, 1.0 - erosion, saturate(rh * 10.0));
             density = remap(density, erosion * load_erosion(), 1.0, 0.0, 1.0);
         }
@@ -106,7 +100,7 @@ common : [[
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) {
-        const uint steps = 4;
+        const uint steps = 6;
         float step_size = load_atmosphere_thickness() / float(steps);
 
         float t = step_size * 0.5;
@@ -123,6 +117,17 @@ common : [[
         // extinction coefficient should be added to ensure energy conservation
         float ext = load_scattering() * shadow + load_absorption();
         return exp2(-step_size * shadow * ext);
+    }
+
+    float2 reproject2(float2 uv) {
+        float4 wp = float4(uv * 2.0 - 1.0, 1.0, 1.0);
+        wp = mul(load_camera_inverse_view_projection(), wp);
+        wp /= wp.w;
+
+        float4 lp = mul(load_camera_last_view_projection(), wp);
+        lp /= lp.w;
+
+        return lp.xy * 0.5 + 0.5;
     }
 
     float2 reproject(float3 wpos) {
@@ -186,7 +191,7 @@ pixel_shader : {
         }
 
         float2 screen_pos = reproject(load_camera_position() + v * load_draw_distance());
-        bool outside = any(abs(screen_pos - 0.5) > 0.5);
+        bool outside = any(abs(screen_pos - 0.5) > 0.499);
 
         float radius = load_planet_radius();
         float3 offset = load_camera_position() + float3(0, radius, 0);
@@ -198,7 +203,7 @@ pixel_shader : {
         // to avoid artifacts at the edges, more steps are required where the 
         // previous frame information was not `available`
         if (outside) {
-            steps *= 16;
+            steps *= 4;
         }
 
         float draw_distance = min(distance(inner, outer), load_draw_distance());
