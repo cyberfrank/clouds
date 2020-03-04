@@ -26,7 +26,8 @@ common : [[
    float perlin_noise(float2 x, float freq) 
     {
         x *= freq; // tile
-        
+
+
         float2 f = frac(x);
         x = floor(x);
 
@@ -83,13 +84,19 @@ pixel_shader : {
 
     code : [[
         float2 uv = input.uv;
-        float min = 0.5;
-        float max = 1.0;
 
-        float r = set_range(fbm(uv, 20, 12), min, max);
-        float g = set_range(fbm(uv, 20, 12), min, max);
+        const float coverage = 0.4;
+        const float smoothness = 0.5;
 
-        output.color = saturate(float4(r, g, 0, 1));
+        float r = fbm(uv, 16, 5);
+        r = set_range(r, coverage, 1.0 + 2.0 * smoothness - 1.0);
+
+        float b = fbm(uv, 4, 4);
+        b *= fbm(uv, 8, 8) * 1.5;
+        b += fbm(uv, 4, 2) * 0.2;
+        b = set_range(b, 1.0, 0.0);
+
+        output.color = saturate(float4(r, 0, b, 1));
         return output;
     ]]
 }

@@ -236,6 +236,7 @@ static void weather_pass_setup(const void *const_data, void *runtime_data, tm_re
 {
     struct tm_component_manager_o *manager = *(tm_component_manager_o **)const_data;
 
+    tm_render_graph_setup_api->set_request_multi_gpu(graph_setup, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL);
     tm_render_graph_setup_api->set_request_async_compute(graph_setup, manager->settings.weather_async_compute);
     tm_render_graph_toolbox_api->setup_fullscreen_pass(&(tm_fullscreen_pass_setup_t){
         .color_targets = {

@@ -72,9 +72,9 @@ common : [[
         
         SamplerState sampler = get_sampler_wrap_linear();
 
-        const float BASE_SCALE = 0.00008;
+        const float BASE_SCALE = 0.00015;
         const float DETAIL_SCALE = 0.0012;
-        const float WEATHER_SCALE = 0.00001;
+        const float WEATHER_SCALE = 0.00002;
 
         float2 wind_vec = load_wind_vector();
         float3 wind = float3(wind_vec.x, 0.2, wind_vec.y) * load_time() * load_wind_speed();
@@ -82,11 +82,9 @@ common : [[
         float3 weather = get_weather_map().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
 
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
-        base_cloud *= height_signal(rh, weather.g * load_cloud_type());
+        base_cloud *= height_signal(rh, weather.b);
 
-        float coverage = (1.0 - weather.r) * (1.0 - load_coverage());
-        float density = remap(base_cloud, coverage, 1.0, 0.0, 1.0);
-        // density *= (1.0 - weather.r);
+        float density = remap(base_cloud, (1.0 - weather.r) * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
 
         if (density > 0)
         {
@@ -96,11 +94,12 @@ common : [[
         }
         
         // reduce density at the bottom
-        return saturate(density * smoothstep(0.0, 1.0, rh));
+        const float fade_amount = 2.0;
+        return saturate(density * smoothstep(0.0, fade_amount, rh));
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) {
-        const uint steps = 6;
+        const uint steps = 4;
         float step_size = load_atmosphere_thickness() / float(steps);
 
         float t = step_size * 0.5;
