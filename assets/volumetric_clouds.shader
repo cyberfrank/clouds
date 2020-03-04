@@ -16,6 +16,7 @@ samplers : {
 
 imports : [
     { name: "num_steps" type: "uint" }
+    { name: "shadow_quality" type: "uint" }
     { name: "coverage" type: "float" }
     { name: "blend_factor" type: "float" }
     { name: "erosion" type: "float" }
@@ -26,8 +27,8 @@ imports : [
     { name: "planet_radius" type: "uint" }
     { name: "atmosphere_start" type: "uint" }
     { name: "atmosphere_thickness" type: "uint" }
-    { name: "scattering" type: "float" }
-    { name: "absorption" type: "float" }
+    { name: "scattering" type: "float3" }
+    { name: "absorption" type: "float3" }
     { name: "draw_distance" type: "float"}
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
@@ -94,12 +95,11 @@ common : [[
         }
         
         // reduce density at the bottom
-        const float fade_amount = 2.0;
-        return saturate(density * smoothstep(0.0, fade_amount, rh));
+        return saturate(density * smoothstep(0.0, 2.0, rh));
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) {
-        const uint steps = 4;
+        const uint steps = load_shadow_quality() * 2 + 1;
         float step_size = load_atmosphere_thickness() / float(steps);
 
         float t = step_size * 0.5;
@@ -114,19 +114,8 @@ common : [[
         }
 
         // extinction coefficient should be added to ensure energy conservation
-        float ext = load_scattering() * shadow + load_absorption();
+        float ext = 0.125 * shadow + 0.055;
         return exp2(-step_size * shadow * ext);
-    }
-
-    float2 reproject2(float2 uv) {
-        float4 wp = float4(uv * 2.0 - 1.0, 1.0, 1.0);
-        wp = mul(load_camera_inverse_view_projection(), wp);
-        wp /= wp.w;
-
-        float4 lp = mul(load_camera_last_view_projection(), wp);
-        lp /= lp.w;
-
-        return lp.xy * 0.5 + 0.5;
     }
 
     float2 reproject(float3 wpos) {
@@ -198,7 +187,6 @@ pixel_shader : {
         float3 outer = ray_sphere_intersect(radius + load_atmosphere_start() + load_atmosphere_thickness(), offset, v);
 
         uint steps = load_num_steps();
-
         // to avoid artifacts at the edges, more steps are required where the 
         // previous frame information was not `available`
         if (outside) {
@@ -208,18 +196,24 @@ pixel_shader : {
         float draw_distance = min(distance(inner, outer), load_draw_distance());
         float step_size = draw_distance / steps;
         float t = step_size * radical_inverse_vdc(load_frame_number());
-        float transmittance = 1.0;
-        float3 scattered_light = float3(0, 0, 0);
         
         float3 sun_dir = load_sun_direction();
-        float cos_theta = dot(v, sun_dir);
-        // dual lobe phase function
-        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
-
         float3 sun_color = get_sky_color_physical(sun_dir);
         float3 sky_light = get_sky_color_physical(float3(0, -1, 0));
+        float transmittance = 1.0;
+        float3 scattered_light = float3(0, 0, 0);
+        float cos_theta = dot(v, sun_dir);
+        float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
 
         float dist = radius;
+        // sigma_a = absorption coeff
+        // sigma_s = scattering coeff
+        // sigma_t = extinction coeff
+        // sigma = albedo (color)
+        // p = phase func
+        // L = luminance
+        // L(x, w) = luminance at point x in direction w
+        // E = illuminance
 
         for (uint step = 0; step < steps; ++step, t += step_size) {
             float3 pos = inner + v * t;
@@ -233,21 +227,23 @@ pixel_shader : {
             {
                 dist = min(dist, t);
 
-                float sigma_sca = load_scattering() * density;
-                float sigma_ext = (sigma_sca + load_absorption()) * density;
+                float sigma_s = 0.125 * density;
+                float sigma_a = 0.055;
+                float sigma_t = (sigma_s + sigma_a) * density;
 
                 float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
 
-                float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_sca;
-                float Tr = exp(-sigma_ext * step_size);
-                float3 Sint = (S - S * Tr) / sigma_ext;
+                float3 S = (volumetric_shadow(sun_dir, pos) * sun_color * hg_dual_phase + ambient) * sigma_s;
+                float Tr = exp(-sigma_t * step_size);
+                float3 Sint = (S - S * Tr) / sigma_t;
 
                 scattered_light += transmittance * Sint;
                 transmittance *= Tr;
             }
-            
+
             // opt out early for low transmittance
             if (transmittance < 0.1) break;
+            
         }
         
         float3 background_color = get_sky_color_physical(v);

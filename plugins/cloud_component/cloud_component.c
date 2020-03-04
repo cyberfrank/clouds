@@ -2,6 +2,7 @@
 
 #include <foundation/api_registry.h>
 #include <foundation/the_truth.h>
+#include <foundation/the_truth_types.h>
 #include <foundation/log.h>
 #include <foundation/macros.h>
 #include <foundation/allocator.h>
@@ -35,6 +36,7 @@
 
 struct tm_logger_api *tm_logger_api;
 struct tm_the_truth_api *tm_the_truth_api;
+struct tm_the_truth_common_types_api *tm_the_truth_common_types_api;
 struct tm_entity_api *tm_entity_api;
 struct tm_renderer_api *tm_renderer_api;
 struct tm_render_graph_module_api *tm_render_graph_module_api;
@@ -63,7 +65,7 @@ typedef struct tm_cloud_component_t {
     tm_shader_resource_binder_instance_t rbinder;
 
     // TM_CLOUD_QUALITY_*
-    uint32_t quality;
+    uint32_t cloud_quality;
 
     float coverage;
     float blend_factor;
@@ -71,9 +73,10 @@ typedef struct tm_cloud_component_t {
     float cloud_type;
     float wind_direction;
     float wind_speed;
-    float scattering;
-    float absorption;
     float draw_distance;
+    uint32_t shadow_quality;
+    tm_vec3_t scattering;
+    tm_vec3_t absorption;
 
     // planet settings
     uint32_t planet_radius;
@@ -105,7 +108,6 @@ typedef struct tm_component_manager_o
     {
         bool visualize_weather;
         bool half_resolution;
-        bool weather_async_compute;
     } settings;
 
 } tm_component_manager_o;
@@ -117,7 +119,6 @@ static void editor_submenu(void *inst, struct tm_ui_o *ui, const struct tm_ui_st
     const tm_ui_menu_item_t items[] = {
         { .text = "Show Weather Texture", .toggle = &manager->settings.visualize_weather },
         { .text = "Half Resolution", .toggle = &manager->settings.half_resolution },
-        { .text = "Weather Async Compute", .toggle = &manager->settings.weather_async_compute },
     };
 
     const tm_ui_menu_t menu = {
@@ -234,10 +235,6 @@ static void cloud_pass_execute(const void *const_data, void *runtime_data, uint6
 
 static void weather_pass_setup(const void *const_data, void *runtime_data, tm_render_graph_setup_o *graph_setup)
 {
-    struct tm_component_manager_o *manager = *(tm_component_manager_o **)const_data;
-
-    tm_render_graph_setup_api->set_request_multi_gpu(graph_setup, TM_RENDERER_DEVICE_AFFINITY_MASK_ALL);
-    tm_render_graph_setup_api->set_request_async_compute(graph_setup, manager->settings.weather_async_compute);
     tm_render_graph_toolbox_api->setup_fullscreen_pass(&(tm_fullscreen_pass_setup_t){
         .color_targets = {
             { .name = TM_WEATHER_MAP_TARGET, .load_op = TM_RENDERER_RESOURCE_LOAD_OP_DISCARD }
@@ -250,6 +247,8 @@ static void weather_pass_setup(const void *const_data, void *runtime_data, tm_re
 static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *manager)
 {
     tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
+
+    tm_render_graph_toolbox_api->custom_fullscreen_pass(mod, weather_pass_setup, &manager, sizeof(tm_component_manager_o *), "Weather Map Compute");
 
     tm_render_graph_pass_i pass = {
         .api = {
@@ -286,8 +285,6 @@ static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *man
             { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_VOLUMETRIC_CLOUDS_TARGET }, { TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION } } }
         }
     }, "Reproject");
-
-    tm_render_graph_toolbox_api->custom_fullscreen_pass(mod, weather_pass_setup, &manager, sizeof(tm_component_manager_o *), "Weather Map Compute");
 
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
         .submenu_name = "Cloud Module",
@@ -377,13 +374,8 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
 
         tm_shader_io_o *io = tm_shader_api->shader_io(c->shader);
 
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("planet_radius", 0x5849f79517d87c7ULL), &c->planet_radius, sizeof(uint32_t));
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_start", 0xb5f14bebd2751c08ULL), &c->atmosphere_start, sizeof(uint32_t));
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_thickness", 0xfa5152e92fe4bd5eULL), &c->atmosphere_thickness, sizeof(uint32_t));
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("draw_distance", 0x7b5664ab252ff2efULL), &c->draw_distance, sizeof(float));
-        
-        uint32_t num_steps = ((c->quality + 1) << 3) + 5;
-        if (c->quality == TM_CLOUD_QUALITY_GROUND_TRUTH)
+        uint32_t num_steps = ((c->cloud_quality + 1) << 3) + 5;
+        if (c->cloud_quality == TM_CLOUD_QUALITY_GROUND_TRUTH)
             num_steps = 256;
 
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("num_steps", 0x55f5f64778324518ULL), &num_steps, sizeof(uint32_t));
@@ -400,10 +392,12 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("wind_vector", 0x6874c809dadb28aaULL), &wind_vector, sizeof(tm_vec2_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("wind_speed", 0xfd56ca9cad86b08fULL), &wind_speed, sizeof(float));
 
-        // set lighting coefficients
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("scattering", 0xdb01fc64550b55eaULL), &c->scattering, sizeof(float));
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("absorption", 0xb6b15328196ed6e9ULL), &c->absorption, sizeof(float));
+        // lighting coefficients
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("scattering", 0xdb01fc64550b55eaULL), &c->scattering, sizeof(tm_vec3_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("absorption", 0xb6b15328196ed6e9ULL), &c->absorption, sizeof(tm_vec3_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("shadow_quality", 0x469a80c16a6f99aaULL), &c->shadow_quality, sizeof(uint32_t));
 
+        // volume textures
         if (c->textures.asset) {
             uint64_t wanted_version = tm_creation_graph_api->graph_version(c->textures.asset);
             if (wanted_version != c->textures.version) {
@@ -418,6 +412,12 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
                 }
             }
         }
+
+        // atmosphere settings
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("planet_radius", 0x5849f79517d87c7ULL), &c->planet_radius, sizeof(uint32_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_start", 0xb5f14bebd2751c08ULL), &c->atmosphere_start, sizeof(uint32_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("atmosphere_thickness", 0xfa5152e92fe4bd5eULL), &c->atmosphere_thickness, sizeof(uint32_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("draw_distance", 0x7b5664ab252ff2efULL), &c->draw_distance, sizeof(float));
     }
 }
 
@@ -435,9 +435,10 @@ void create_truth_types(struct tm_the_truth_o *tt)
         { "planet_radius", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "atmosphere_start", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "atmosphere_thickness", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
-        { "scattering", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
-        { "absorption", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "draw_distance", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
+        { "shadow_quality", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
+        { "scattering", TM_THE_TRUTH_PROPERTY_TYPE_SUBOBJECT, .type_hash = TM_TT_TYPE_HASH__VEC3 },
+        { "absorption", TM_THE_TRUTH_PROPERTY_TYPE_SUBOBJECT, .type_hash = TM_TT_TYPE_HASH__VEC3 },
     };
 
     const uint64_t object_type = tm_the_truth_api->create_object_type(tt, TM_TT_TYPE__CLOUD_COMPONENT, properties, TM_ARRAY_COUNT(properties));
@@ -445,17 +446,18 @@ void create_truth_types(struct tm_the_truth_o *tt)
     const uint64_t component = tm_the_truth_api->create_object_of_type(tt, tm_the_truth_api->object_type_from_name_hash(tt, TM_TT_TYPE_HASH__CLOUD_COMPONENT), TM_TT_NO_UNDO_SCOPE);
     tm_the_truth_object_o *component_w = tm_the_truth_api->write(tt, component);
 
-    tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, TM_CLOUD_QUALITY_HIGH);
+    tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, TM_CLOUD_QUALITY_MEDIUM);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__PLANET_RADIUS, 6371000);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_START, 1500);
     tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS, 2000);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, 0.0f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__BLEND_FACTOR, 0.05f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__EROSION, 0.4f);
-    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, 0.5f);
-    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, 0.125f);
-    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, 0.055f);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, 1.0f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE, 10000.0f);
+    tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SHADOW_QUALITY, TM_CLOUD_QUALITY_LOW);
+    tm_the_truth_common_types_api->set_vec3(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, (tm_vec3_t){ 0.125f, 0.125f, 0.125f }, TM_TT_NO_UNDO_SCOPE);
+    tm_the_truth_common_types_api->set_vec3(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, (tm_vec3_t){ 0.067f, 0.055f, 0.055f }, TM_TT_NO_UNDO_SCOPE);
 
     tm_the_truth_api->commit(tt, component_w, TM_TT_NO_UNDO_SCOPE);
     tm_the_truth_api->set_default_object(tt, object_type, component);
@@ -471,7 +473,7 @@ void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_clo
 {
     const tm_the_truth_object_o *object = tm_the_truth_api->read(tt, asset);
 
-    c->quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
+    c->cloud_quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY);
     c->coverage = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE);
     c->blend_factor = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__BLEND_FACTOR);
     c->erosion = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__EROSION);
@@ -481,9 +483,10 @@ void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_clo
     c->planet_radius = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__PLANET_RADIUS);
     c->atmosphere_start = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_START);
     c->atmosphere_thickness = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS);
-    c->scattering = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
-    c->absorption = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
     c->draw_distance = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE);
+    c->shadow_quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SHADOW_QUALITY);
+    c->scattering = tm_the_truth_common_types_api->get_vec3(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
+    c->absorption = tm_the_truth_common_types_api->get_vec3(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
 
     uint64_t ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES);
     if (ref != c->textures.asset) {
@@ -575,6 +578,7 @@ void load_cloud_component(struct tm_api_registry_api *reg, bool load)
 {
     tm_logger_api = reg->get(TM_LOGGER_API_NAME);
     tm_the_truth_api = reg->get(TM_THE_TRUTH_API_NAME);
+    tm_the_truth_common_types_api = reg->get(TM_THE_TRUTH_COMMON_TYPES_API_NAME);
     tm_allocator_api = reg->get(TM_ALLOCATOR_API_NAME);
     tm_temp_allocator_api = reg->get(TM_TEMP_ALLOCATOR_API_NAME);
     tm_entity_api = reg->get(TM_ENTITY_API_NAME);
@@ -611,7 +615,7 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
         "Ground Truth",
     };
 
-    item_rect.y = tm_properties_view_api->ui_uint32_dropdown(args, item_rect, "Quality", 0, object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, options, 0, TM_ARRAY_COUNT(options));
+    item_rect.y = tm_properties_view_api->ui_uint32_dropdown(args, item_rect, "Quality", "Determines the total number of samples captured per ray.", object, TM_TT_PROP__CLOUD_COMPONENT__QUALITY, options, 0, TM_ARRAY_COUNT(options));
     item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, 
         "Temporal Alpha", 
         "Determines the contribution of a new frame. Lower values yields less banding but takes longer time to converge.", 
@@ -629,7 +633,6 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Weather", 0, object, indent, true, &show_weather);
     if (show_weather) {
         item_rect.x += TM_PROPERTIES_METRIC_INDENT;
-
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Coverage", 0, object, TM_TT_PROP__CLOUD_COMPONENT__COVERAGE, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Erosion", 0, object, TM_TT_PROP__CLOUD_COMPONENT__EROSION, &slider01);
         item_rect.y = tm_properties_view_api->ui_float_slider(args, item_rect, "Cloud Type", 0, object, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, &slider01);
@@ -640,8 +643,11 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Lighting", 0, object, indent, true, &show_lighting);
     if (show_lighting) {
         item_rect.x += TM_PROPERTIES_METRIC_INDENT;
-        item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Scattering", 0, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, 0);
-        item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Absorption", 0, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, 0);
+        const uint64_t scattering = tm_the_truth_api->get_subobject(args->tt, tm_tt_read(args->tt, object), TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
+        const uint64_t absorption = tm_the_truth_api->get_subobject(args->tt, tm_tt_read(args->tt, object), TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
+        item_rect.y = tm_properties_view_api->ui_vec3(args, item_rect, "Scattering", "Media scattering coefficient", scattering);
+        item_rect.y = tm_properties_view_api->ui_vec3(args, item_rect, "Absorption", "Media absorption coefficient", absorption);
+        item_rect.y = tm_properties_view_api->ui_uint32_dropdown(args, item_rect, "Shadow Quality", "Determines the number of samples captured in the sun direction per sample step.", object, TM_TT_PROP__CLOUD_COMPONENT__SHADOW_QUALITY, options, 0, TM_ARRAY_COUNT(options) - 1);
     }
     bool show_config = false;
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Configuration", 0, object, indent, false, &show_config);
