@@ -27,8 +27,8 @@ imports : [
     { name: "planet_radius" type: "uint" }
     { name: "atmosphere_start" type: "uint" }
     { name: "atmosphere_thickness" type: "uint" }
-    { name: "scattering" type: "float3" }
-    { name: "absorption" type: "float3" }
+    { name: "scattering" type: "float" }
+    { name: "absorption" type: "float" }
     { name: "draw_distance" type: "float"}
     { name: "cloud_shape" type: "texture_3d" }
     { name: "cloud_detail" type: "texture_3d" }
@@ -89,7 +89,7 @@ common : [[
 
         if (density > 0)
         {
-            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind * 16).r;
+            float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind).r;
             erosion = lerp(erosion, 1.0 - erosion, saturate(rh * 10.0));
             density = remap(density, erosion * load_erosion(), 1.0, 0.0, 1.0);
         }
@@ -112,10 +112,11 @@ common : [[
             float density = capture_sample(position, rh);
             shadow += density;
         }
-
         // extinction coefficient should be added to ensure energy conservation
-        float ext = 0.125 * shadow + 0.055;
-        return exp2(-step_size * shadow * ext);
+        // float ext = load_scattering() * shadow + load_absorption();
+        float sigma_s = load_scattering() * shadow;
+        float sigma_t = (sigma_s + load_absorption()) * shadow;
+        return exp2(-sigma_t * step_size);
     }
 
     float2 reproject(float3 wpos) {
@@ -203,17 +204,10 @@ pixel_shader : {
         float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
         float cos_theta = dot(v, sun_dir);
+
         float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
 
         float dist = radius;
-        // sigma_a = absorption coeff
-        // sigma_s = scattering coeff
-        // sigma_t = extinction coeff
-        // sigma = albedo (color)
-        // p = phase func
-        // L = luminance
-        // L(x, w) = luminance at point x in direction w
-        // E = illuminance
 
         for (uint step = 0; step < steps; ++step, t += step_size) {
             float3 pos = inner + v * t;
@@ -227,9 +221,8 @@ pixel_shader : {
             {
                 dist = min(dist, t);
 
-                float sigma_s = 0.125 * density;
-                float sigma_a = 0.055;
-                float sigma_t = (sigma_s + sigma_a) * density;
+                float sigma_s = load_scattering() * density;
+                float sigma_t = (sigma_s + load_absorption()) * density;
 
                 float3 ambient = sky_light * smoothstep(0.0, 1.0, rh);
 

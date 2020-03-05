@@ -85,15 +85,13 @@ pixel_shader : {
     code : [[
         float2 uv = input.uv;
 
-        const float coverage = 0.4;
+        const float coverage = 0.45;
         const float smoothness = 0.5;
 
         float r = fbm(uv, 16, 5);
         r = set_range(r, coverage, 1.0 + 2.0 * smoothness - 1.0);
 
-        float b = fbm(uv, 4, 4);
-        b *= fbm(uv, 8, 8) * 1.5;
-        b += fbm(uv, 4, 2) * 0.2;
+        float b = fbm(uv, 8, 5);
         b = set_range(b, 1.0, 0.0);
 
         output.color = saturate(float4(r, 0, b, 1));

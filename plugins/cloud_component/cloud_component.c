@@ -75,8 +75,8 @@ typedef struct tm_cloud_component_t {
     float wind_speed;
     float draw_distance;
     uint32_t shadow_quality;
-    tm_vec3_t scattering;
-    tm_vec3_t absorption;
+    float scattering;
+    float absorption;
 
     // planet settings
     uint32_t planet_radius;
@@ -392,10 +392,10 @@ static void update(struct tm_component_manager_o *manager, struct tm_render_grap
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("wind_vector", 0x6874c809dadb28aaULL), &wind_vector, sizeof(tm_vec2_t));
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("wind_speed", 0xfd56ca9cad86b08fULL), &wind_speed, sizeof(float));
 
-        // lighting coefficients
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("scattering", 0xdb01fc64550b55eaULL), &c->scattering, sizeof(tm_vec3_t));
-        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("absorption", 0xb6b15328196ed6e9ULL), &c->absorption, sizeof(tm_vec3_t));
+        // lighting params
         set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("shadow_quality", 0x469a80c16a6f99aaULL), &c->shadow_quality, sizeof(uint32_t));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("scattering", 0xdb01fc64550b55eaULL), &c->scattering, sizeof(float));
+        set_constant(io, res_buf, &c->cbuffer, TM_STATIC_HASH("absorption", 0xb6b15328196ed6e9ULL), &c->absorption, sizeof(float));
 
         // volume textures
         if (c->textures.asset) {
@@ -437,8 +437,8 @@ void create_truth_types(struct tm_the_truth_o *tt)
         { "atmosphere_thickness", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
         { "draw_distance", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
         { "shadow_quality", TM_THE_TRUTH_PROPERTY_TYPE_UINT32_T },
-        { "scattering", TM_THE_TRUTH_PROPERTY_TYPE_SUBOBJECT, .type_hash = TM_TT_TYPE_HASH__VEC3 },
-        { "absorption", TM_THE_TRUTH_PROPERTY_TYPE_SUBOBJECT, .type_hash = TM_TT_TYPE_HASH__VEC3 },
+        { "scattering", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
+        { "absorption", TM_THE_TRUTH_PROPERTY_TYPE_FLOAT },
     };
 
     const uint64_t object_type = tm_the_truth_api->create_object_type(tt, TM_TT_TYPE__CLOUD_COMPONENT, properties, TM_ARRAY_COUNT(properties));
@@ -455,9 +455,9 @@ void create_truth_types(struct tm_the_truth_o *tt)
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__EROSION, 0.4f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__CLOUD_TYPE, 1.0f);
     tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE, 10000.0f);
-    tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SHADOW_QUALITY, TM_CLOUD_QUALITY_LOW);
-    tm_the_truth_common_types_api->set_vec3(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, (tm_vec3_t){ 0.125f, 0.125f, 0.125f }, TM_TT_NO_UNDO_SCOPE);
-    tm_the_truth_common_types_api->set_vec3(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, (tm_vec3_t){ 0.067f, 0.055f, 0.055f }, TM_TT_NO_UNDO_SCOPE);
+    tm_the_truth_api->set_uint32_t(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SHADOW_QUALITY, TM_CLOUD_QUALITY_MEDIUM);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, 0.125f);
+    tm_the_truth_api->set_float(tt, component_w, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, 0.067f);
 
     tm_the_truth_api->commit(tt, component_w, TM_TT_NO_UNDO_SCOPE);
     tm_the_truth_api->set_default_object(tt, object_type, component);
@@ -485,8 +485,8 @@ void component_load_asset(tm_component_manager_o *manager, tm_entity_t e, tm_clo
     c->atmosphere_thickness = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ATMOSPHERE_THICKNESS);
     c->draw_distance = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__DRAW_DISTANCE);
     c->shadow_quality = tm_the_truth_api->get_uint32_t(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SHADOW_QUALITY);
-    c->scattering = tm_the_truth_common_types_api->get_vec3(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
-    c->absorption = tm_the_truth_common_types_api->get_vec3(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
+    c->scattering = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
+    c->absorption = tm_the_truth_api->get_float(tt, object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
 
     uint64_t ref = tm_the_truth_api->get_reference(tt, object, TM_TT_PROP__CLOUD_COMPONENT__TEXTURES);
     if (ref != c->textures.asset) {
@@ -643,11 +643,9 @@ static float properties_ui(struct tm_properties_ui_args_t *args, tm_rect_t item_
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Lighting", 0, object, indent, true, &show_lighting);
     if (show_lighting) {
         item_rect.x += TM_PROPERTIES_METRIC_INDENT;
-        const uint64_t scattering = tm_the_truth_api->get_subobject(args->tt, tm_tt_read(args->tt, object), TM_TT_PROP__CLOUD_COMPONENT__SCATTERING);
-        const uint64_t absorption = tm_the_truth_api->get_subobject(args->tt, tm_tt_read(args->tt, object), TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION);
-        item_rect.y = tm_properties_view_api->ui_vec3(args, item_rect, "Scattering", "Media scattering coefficient", scattering);
-        item_rect.y = tm_properties_view_api->ui_vec3(args, item_rect, "Absorption", "Media absorption coefficient", absorption);
         item_rect.y = tm_properties_view_api->ui_uint32_dropdown(args, item_rect, "Shadow Quality", "Determines the number of samples captured in the sun direction per sample step.", object, TM_TT_PROP__CLOUD_COMPONENT__SHADOW_QUALITY, options, 0, TM_ARRAY_COUNT(options) - 1);
+        item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Scattering", "Media scattering coefficient", object, TM_TT_PROP__CLOUD_COMPONENT__SCATTERING, 0);
+        item_rect.y = tm_properties_view_api->ui_float(args, item_rect, "Absorption", "Media absorption coefficient", object, TM_TT_PROP__CLOUD_COMPONENT__ABSORPTION, 0);
     }
     bool show_config = false;
     item_rect.y = tm_properties_view_api->ui_group(args, item_rect, "Configuration", 0, object, indent, false, &show_config);
