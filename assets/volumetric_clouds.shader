@@ -74,7 +74,7 @@ common : [[
         SamplerState sampler = get_sampler_wrap_linear();
 
         const float BASE_SCALE = 0.00015;
-        const float DETAIL_SCALE = 0.0012;
+        const float DETAIL_SCALE = 0.0018;
         const float WEATHER_SCALE = 0.00002;
 
         float2 wind_vec = load_wind_vector();
@@ -83,15 +83,13 @@ common : [[
         float3 weather = get_weather_map().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
 
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
-        base_cloud *= height_signal(rh, weather.b);
+        float density = remap(base_cloud * height_signal(rh, weather.b), (1.0 - weather.r) * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
 
-        float density = remap(base_cloud, (1.0 - weather.r) * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
-
-        if (density > 0)
+        if (density < 0.5)
         {
             float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind).r;
             erosion = lerp(erosion, 1.0 - erosion, saturate(rh * 10.0));
-            density = remap(density, erosion * load_erosion(), 1.0, 0.0, 1.0);
+            density -= erosion * load_erosion();
         }
         
         // reduce density at the bottom

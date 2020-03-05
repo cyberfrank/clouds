@@ -248,8 +248,6 @@ static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *man
 {
     tm_render_graph_module_o *mod = tm_render_graph_module_api->create(&manager->allocator);
 
-    tm_render_graph_toolbox_api->custom_fullscreen_pass(mod, weather_pass_setup, &manager, sizeof(tm_component_manager_o *), "Weather Map Compute");
-
     tm_render_graph_pass_i pass = {
         .api = {
             .setup_pass = cloud_pass_setup,
@@ -285,6 +283,8 @@ static tm_render_graph_module_o *create_cloud_module(tm_component_manager_o *man
             { .slot_name = TM_STATIC_HASH("textures", 0x64e318ce6361e6acULL), .resources = { { TM_VOLUMETRIC_CLOUDS_TARGET }, { TM_DEFAULT_RENDER_PIPE_MAIN_HDR_ACCUMULATION } } }
         }
     }, "Reproject");
+
+    tm_render_graph_toolbox_api->custom_fullscreen_pass(mod, weather_pass_setup, &manager, sizeof(tm_component_manager_o *), "Weather Map Compute");
 
     tm_render_graph_module_api->set_editor_submenu_interface(mod, &(tm_render_graph_module_editor_submenu_i){
         .submenu_name = "Cloud Module",
