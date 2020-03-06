@@ -54,9 +54,9 @@ common : [[
     }
 
     float height_signal(in float rh, in float cloud_type) {
-        const float4 g0 = float4(0.0, 0.1, 0.2, 0.3);  // stratus
-        const float4 g1 = float4(0.02, 0.2, 0.48, 0.625);  // stratocumulus
-        const float4 g2 = float4(0.0, 0.1625, 0.88, 0.98); // cumulus
+        const float4 g0 = float4(0.0, 0.1, 0.2, 0.3);       // stratus
+        const float4 g1 = float4(0.02, 0.2, 0.48, 0.625);   // stratocumulus
+        const float4 g2 = float4(0.0, 0.1625, 0.88, 0.98);  // cumulus
         
         float a = 1.0 - saturate(cloud_type * 2.0);
         float b = 1.0 - abs(cloud_type - 0.5) * 2.0;
@@ -67,15 +67,15 @@ common : [[
         return smoothstep(gradient.x, gradient.y, rh) - smoothstep(gradient.z, gradient.w, rh);
     }
 
+    #define BASE_SCALE 0.00012
+    #define DETAIL_SCALE 0.0014
+    #define WEATHER_SCALE 0.00002
+
     float capture_sample(float3 pos, in float rh) {
         Texture3D shape = get_cloud_shape();
         Texture3D detail = get_cloud_detail();
         
         SamplerState sampler = get_sampler_wrap_linear();
-
-        const float BASE_SCALE = 0.00015;
-        const float DETAIL_SCALE = 0.0018;
-        const float WEATHER_SCALE = 0.00002;
 
         float2 wind_vec = load_wind_vector();
         float3 wind = float3(wind_vec.x, 0.2, wind_vec.y) * load_time() * load_wind_speed();
@@ -83,13 +83,13 @@ common : [[
         float3 weather = get_weather_map().Sample(sampler, pos.xz * WEATHER_SCALE).rgb;
 
         float base_cloud = shape.Sample(sampler, pos * BASE_SCALE + wind).r;
-        float density = remap(base_cloud * height_signal(rh, weather.b), (1.0 - weather.r) * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
+        float density = remap(base_cloud * height_signal(rh, weather.b * load_cloud_type()), (1.0 - weather.r) * (1.0 - load_coverage()), 1.0, 0.0, 1.0);
 
         if (density < 0.5)
         {
             float erosion = detail.Sample(sampler, pos * DETAIL_SCALE + wind).r;
             erosion = lerp(erosion, 1.0 - erosion, saturate(rh * 10.0));
-            density -= erosion * load_erosion();
+            density = remap(density, erosion * load_erosion(), 1.0, 0.0, 1.0);
         }
         
         // reduce density at the bottom
@@ -97,21 +97,18 @@ common : [[
     }
 
     float volumetric_shadow(in float3 sun_dir, in float3 origin) {
-        const uint steps = load_shadow_quality() * 2 + 1;
+        const uint steps = load_shadow_quality() * 2 + 2;
         float step_size = load_atmosphere_thickness() / float(steps);
 
-        float t = step_size * 0.5;
+        float t = step_size;
         float shadow = 0.0;
-        float3 position;
 
         for (uint step = 0; step < steps; ++step, t += step_size) {
-            position = origin + sun_dir * t;
-            float rh = height_in_shell(position);
-            float density = capture_sample(position, rh);
-            shadow += density;
+            float3 pos = origin + sun_dir * t;
+            shadow += capture_sample(pos, height_in_shell(pos));
         }
-        // extinction coefficient should be added to ensure energy conservation
-        // float ext = load_scattering() * shadow + load_absorption();
+
+        // extinction coefficient be added to ensure energy conservation
         float sigma_s = load_scattering() * shadow;
         float sigma_t = (sigma_s + load_absorption()) * shadow;
         return exp2(-sigma_t * step_size);
@@ -120,7 +117,6 @@ common : [[
     float2 reproject(float3 wpos) {
         float4 last_cp = mul(float4(wpos, 1), load_camera_last_view_projection());
         last_cp /= last_cp.w;
-
         return float2(last_cp.x, -last_cp.y) * 0.5 + 0.5;
     }
 
@@ -135,7 +131,6 @@ vertex_shader : {
     exports : [        
         { name: "camera_ray" type: "float3" }
         { name: "uv" type: "float2" }
-        { name: "frag_pos" type: "float4" }
     ] 
 
     code : [[
@@ -157,7 +152,6 @@ vertex_shader : {
         float4x4 inverse_view = load_camera_inverse_view();
         float4 cp = float4(pos[input.vertex_id].xy, 1, 1);
         float4 p = mul(cp, load_camera_inverse_projection());
-        output.frag_pos = p;
         output.camera_ray = mul(p.xyz, (float3x3)inverse_view);
         return output;
     ]]
@@ -199,8 +193,8 @@ pixel_shader : {
         float3 sun_dir = load_sun_direction();
         float3 sun_color = get_sky_color_physical(sun_dir);
         float3 sky_light = get_sky_color_physical(float3(0, -1, 0));
-        float transmittance = 1.0;
         float3 scattered_light = float3(0, 0, 0);
+        float transmittance = 1.0;
         float cos_theta = dot(v, sun_dir);
 
         float hg_dual_phase = lerp(hg_phase(cos_theta, 0.8), hg_phase(cos_theta, -0.2), 0.5);
@@ -211,7 +205,6 @@ pixel_shader : {
             float3 pos = inner + v * t;
             // get relative height in atmosphere
             float rh = height_in_shell(pos);
-
             float density = capture_sample(pos, rh);
 
             // improved scattering equation proposed by Seb Hillaire
@@ -234,16 +227,15 @@ pixel_shader : {
 
             // opt out early for low transmittance
             if (transmittance < 0.1) break;
-            
         }
         
         float3 background_color = get_sky_color_physical(v);
         float fog_amount = 1.0 - exp(-dist * (1.0 / load_draw_distance()));
-        scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), saturate(fog_amount));
+        scattered_light = lerp(scattered_light, background_color * (1.0 - transmittance), fog_amount);
 
-        // @hack background should in reality be added before the cloud pass
-        float4 curr_frame = float4(scattered_light + background_color * transmittance, transmittance);
+        // @hack background should be added before the cloud pass
         float4 last_frame = get_history().Sample(get_sampler_wrap_linear(), screen_pos);
+        float4 curr_frame = float4(scattered_light + background_color * transmittance, transmittance);
 
         output.color = outside ? curr_frame : lerp(last_frame, curr_frame, load_blend_factor());
         return output;

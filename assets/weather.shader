@@ -15,10 +15,11 @@ common : [[
         return saturate((value - low)/(high - low));
     }
 
+    #define S .156456
     float hash12(float2 p, float f)
     {
         p = abs(p % f);
-        float3 p3 = frac(float3(p.xyx) * .1031);
+        float3 p3 = frac(float3(p.xyx) * S);
         p3 += dot(p3, p3.yzx + 33.33);
         return frac((p3.x + p3.y) * p3.z);
     }
@@ -84,14 +85,15 @@ pixel_shader : {
     code : [[
         float2 uv = input.uv;
 
-        const float coverage = 0.4;
+        const float coverage = 0.3;
         const float smoothness = 0.5;
+        const float height_bias = 0.5;
 
-        float r = fbm(uv, 12, 5);
+        float r = fbm(uv, 10, 15);
         r = set_range(r, coverage, 1.0 + 2.0 * smoothness - 1.0);
 
-        float b = fbm(uv, 4, 5);
-        b = set_range(b, 0.0, 1.0);
+        float b = fbm(uv, 10, 2);
+        b = set_range(b, 1.0 + 2.0 * height_bias - 1.0, 0.0);
 
         output.color = saturate(float4(r, 0, b, 1));
         return output;
