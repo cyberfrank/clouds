@@ -100,7 +100,7 @@ common : [[
         const uint steps = load_shadow_quality() * 2 + 2;
         float step_size = load_atmosphere_thickness() / float(steps);
 
-        float t = step_size;
+        float t = step_size * 0.5;
         float shadow = 0.0;
 
         for (uint step = 0; step < steps; ++step, t += step_size) {
